@@ -4119,6 +4119,408 @@ def cmd_update(args):
             sys.exit(1)
 
 
+def cmd_update_custom(args):
+    """Update from upstream via fork's custom branch.
+
+    Workflow:
+    1. Stash any dirty files
+    2. Checkout main, fast-forward to upstream/main, push mirror to origin/main
+    3. Checkout custom, rebase onto main
+    4. Force-push custom to origin
+    5. Run all post-update tasks (deps, skills, config, gateway restart)
+    6. Leave on custom branch
+    """
+    import shutil
+    from hermes_cli.config import is_managed, managed_error
+
+    if is_managed():
+        managed_error("update Hermes Agent")
+        return
+
+    print("⚕ Updating Hermes Agent (custom fork workflow)...")
+    print()
+
+    git_dir = PROJECT_ROOT / '.git'
+    if not git_dir.exists():
+        print("✗ Not a git repository.")
+        sys.exit(1)
+
+    git_cmd = ["git"]
+
+    # Verify remotes exist
+    for remote in ("origin", "upstream"):
+        r = subprocess.run(
+            git_cmd + ["remote", "get-url", remote],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print(f"✗ Remote '{remote}' not found.")
+            if remote == "upstream":
+                print("  Add it: git remote add upstream https://github.com/NousResearch/hermes-agent.git")
+            sys.exit(1)
+
+    origin_url = subprocess.run(
+        git_cmd + ["remote", "get-url", "origin"],
+        cwd=PROJECT_ROOT, capture_output=True, text=True,
+    ).stdout.strip()
+    upstream_url = subprocess.run(
+        git_cmd + ["remote", "get-url", "upstream"],
+        cwd=PROJECT_ROOT, capture_output=True, text=True,
+    ).stdout.strip()
+    print(f"  origin:   {origin_url}")
+    print(f"  upstream: {upstream_url}")
+    print()
+
+    # 1. Stash dirty files
+    auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+
+    try:
+        # 2. Fetch both remotes
+        print("→ Fetching upstream...")
+        r = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print(f"✗ Failed to fetch upstream: {r.stderr.strip()}")
+            sys.exit(1)
+
+        print("→ Fetching origin...")
+        r = subprocess.run(
+            git_cmd + ["fetch", "origin"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print(f"✗ Failed to fetch origin: {r.stderr.strip()}")
+            sys.exit(1)
+
+        # 3. Checkout main, fast-forward to upstream/main
+        print("→ Updating main from upstream...")
+        subprocess.run(
+            git_cmd + ["checkout", "main"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+        )
+
+        upstream_count = subprocess.run(
+            git_cmd + ["rev-list", "HEAD..upstream/main", "--count"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        if int(upstream_count) > 0:
+            print(f"  {upstream_count} new commit(s) from upstream")
+            r = subprocess.run(
+                git_cmd + ["reset", "--hard", "upstream/main"],
+                cwd=PROJECT_ROOT, capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                print(f"✗ Failed to reset main to upstream/main: {r.stderr.strip()}")
+                sys.exit(1)
+
+            # Push mirror to origin/main
+            print("→ Pushing main to origin (mirror)...")
+            r = subprocess.run(
+                git_cmd + ["push", "origin", "main"],
+                cwd=PROJECT_ROOT, capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                # Force push if needed (e.g. upstream rebased)
+                r = subprocess.run(
+                    git_cmd + ["push", "--force-with-lease", "origin", "main"],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True,
+                )
+                if r.returncode != 0:
+                    print(f"  ⚠ Could not push main to origin: {r.stderr.strip()}")
+                    print("    Local main is updated but fork mirror may be behind.")
+                else:
+                    print("  ✓ Force-pushed main to origin")
+            else:
+                print("  ✓ Pushed main to origin")
+        else:
+            print("  ✓ main is already up to date with upstream")
+
+        # 4. Checkout custom, rebase onto main
+        print("→ Rebasing custom onto main...")
+        subprocess.run(
+            git_cmd + ["checkout", "custom"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+        )
+
+        r = subprocess.run(
+            git_cmd + ["rebase", "main"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print("✗ Rebase failed — conflicts detected!")
+            print(f"  {r.stderr.strip()}")
+            print()
+            print("  Resolve manually:")
+            print("    cd ~/.hermes/hermes-agent")
+            print("    git rebase main   # fix conflicts")
+            print("    git rebase --continue")
+            print("    git push --force-with-lease origin custom")
+            # Abort the failed rebase to leave clean state
+            subprocess.run(
+                git_cmd + ["rebase", "--abort"],
+                cwd=PROJECT_ROOT, capture_output=True, text=True,
+            )
+            sys.exit(1)
+        print("  ✓ Rebased custom onto main")
+
+        # 5. Force-push custom to origin
+        print("→ Pushing custom to origin...")
+        r = subprocess.run(
+            git_cmd + ["push", "--force-with-lease", "origin", "custom"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print(f"  ⚠ Could not push custom to origin: {r.stderr.strip()}")
+            print("    Local is updated but remote custom may be behind.")
+        else:
+            print("  ✓ Pushed custom to origin")
+
+    finally:
+        # Always restore stash
+        if auto_stash_ref is not None:
+            _restore_stashed_changes(
+                git_cmd, PROJECT_ROOT, auto_stash_ref,
+                prompt_user=sys.stdin.isatty() and sys.stdout.isatty(),
+            )
+
+    # ── Post-update tasks (same as cmd_update) ──────────────────────────
+
+    _invalidate_update_cache()
+
+    # Clear stale bytecode
+    removed = _clear_bytecode_cache(PROJECT_ROOT)
+    if removed:
+        print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+
+    # Reinstall Python dependencies
+    print("→ Updating Python dependencies...")
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+    else:
+        pip_cmd = [sys.executable, "-m", "pip"]
+        try:
+            subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                cwd=PROJECT_ROOT, check=True,
+            )
+        _install_python_dependencies_with_optional_fallback(pip_cmd)
+
+    # Node.js deps
+    if (PROJECT_ROOT / "package.json").exists():
+        if shutil.which("npm"):
+            print("→ Updating Node.js dependencies...")
+            subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
+
+    print()
+    print("✓ Code updated!")
+
+    # Reload hermes_constants
+    try:
+        import importlib
+        import hermes_constants as _hc
+        importlib.reload(_hc)
+    except Exception:
+        pass
+
+    # Sync bundled skills
+    try:
+        from tools.skills_sync import sync_skills
+        print()
+        print("→ Syncing bundled skills...")
+        result = sync_skills(quiet=True)
+        if result["copied"]:
+            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+        if result.get("updated"):
+            print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
+        if result.get("user_modified"):
+            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+        if result.get("cleaned"):
+            print(f"  − {len(result['cleaned'])} removed from manifest")
+        if not result["copied"] and not result.get("updated"):
+            print("  ✓ Skills are up to date")
+    except Exception as e:
+        logger.debug("Skills sync during update failed: %s", e)
+
+    # Sync skills to other profiles
+    try:
+        from hermes_cli.profiles import list_profiles, get_active_profile_name, seed_profile_skills
+        active = get_active_profile_name()
+        other_profiles = [p for p in list_profiles() if not p.is_default and p.name != active]
+        if other_profiles:
+            print()
+            print("→ Syncing bundled skills to other profiles...")
+            for p in other_profiles:
+                try:
+                    r = seed_profile_skills(p.path, quiet=True)
+                    if r:
+                        copied = len(r.get("copied", []))
+                        updated = len(r.get("updated", []))
+                        modified = len(r.get("user_modified", []))
+                        parts = []
+                        if copied: parts.append(f"+{copied} new")
+                        if updated: parts.append(f"↑{updated} updated")
+                        if modified: parts.append(f"~{modified} user-modified")
+                        status = ", ".join(parts) if parts else "up to date"
+                    else:
+                        status = "sync failed"
+                    print(f"  {p.name}: {status}")
+                except Exception as pe:
+                    print(f"  {p.name}: error ({pe})")
+    except Exception:
+        pass
+
+    # Honcho sync
+    try:
+        from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
+        synced = sync_honcho_profiles_quiet()
+        if synced:
+            print(f"\n-> Honcho: synced {synced} profile(s)")
+    except Exception:
+        pass
+
+    # Config migrations
+    print()
+    print("→ Checking configuration for new options...")
+
+    from hermes_cli.config import (
+        get_missing_env_vars, get_missing_config_fields,
+        check_config_version, migrate_config
+    )
+
+    missing_env = get_missing_env_vars(required_only=True)
+    missing_config = get_missing_config_fields()
+    current_ver, latest_ver = check_config_version()
+
+    needs_migration = missing_env or missing_config or current_ver < latest_ver
+
+    if needs_migration:
+        print()
+        if missing_env:
+            print(f"  ⚠️  {len(missing_env)} new required setting(s) need configuration")
+        if missing_config:
+            print(f"  ℹ️  {len(missing_config)} new config option(s) available")
+
+        print()
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print("  ℹ Non-interactive session — skipping config migration prompt.")
+            print("    Run 'hermes config migrate' later to apply any new config/env options.")
+            response = "n"
+        else:
+            try:
+                response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            except EOFError:
+                response = "n"
+
+        if response in ('', 'y', 'yes'):
+            print()
+            results = migrate_config(interactive=True, quiet=False)
+            if results["env_added"] or results["config_added"]:
+                print()
+                print("✓ Configuration updated!")
+        else:
+            print()
+            print("Skipped. Run 'hermes config migrate' later to configure.")
+    else:
+        print("  ✓ Configuration is up to date")
+
+    print()
+    print("✓ Update complete! (on branch: custom)")
+
+    # Auto-restart gateways
+    try:
+        from hermes_cli.gateway import (
+            is_macos, is_linux, _ensure_user_systemd_env,
+            get_systemd_linger_status, find_gateway_pids,
+            _get_service_pids,
+        )
+        import signal as _signal
+
+        restarted_services = []
+        killed_pids = set()
+
+        if is_linux():
+            try:
+                _ensure_user_systemd_env()
+            except Exception:
+                pass
+
+            for scope, scope_cmd in [("user", ["systemctl", "--user"]), ("system", ["systemctl"])]:
+                try:
+                    result = subprocess.run(
+                        scope_cmd + ["list-units", "hermes-gateway*", "--plain", "--no-legend", "--no-pager"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    for line in result.stdout.strip().splitlines():
+                        parts = line.split()
+                        if not parts:
+                            continue
+                        unit = parts[0]
+                        if not unit.endswith(".service"):
+                            continue
+                        svc_name = unit.removesuffix(".service")
+                        check = subprocess.run(
+                            scope_cmd + ["is-active", svc_name],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if check.stdout.strip() == "active":
+                            restart = subprocess.run(
+                                scope_cmd + ["restart", svc_name],
+                                capture_output=True, text=True, timeout=15,
+                            )
+                            if restart.returncode == 0:
+                                restarted_services.append(svc_name)
+                            else:
+                                print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+        if is_macos():
+            try:
+                from hermes_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
+                plist_path = get_launchd_plist_path()
+                if plist_path.exists():
+                    check = subprocess.run(
+                        ["launchctl", "list", get_launchd_label()],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if check.returncode == 0:
+                        try:
+                            launchd_restart()
+                            restarted_services.append(get_launchd_label())
+                        except subprocess.CalledProcessError as e:
+                            stderr = (getattr(e, "stderr", "") or "").strip()
+                            print(f"  ⚠ Gateway restart failed: {stderr}")
+            except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+                pass
+
+        service_pids = _get_service_pids()
+        manual_pids = find_gateway_pids(exclude_pids=service_pids)
+        for pid in manual_pids:
+            try:
+                os.kill(pid, _signal.SIGTERM)
+                killed_pids.add(pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        if restarted_services or killed_pids:
+            print()
+            for svc in restarted_services:
+                print(f"  ✓ Restarted {svc}")
+            if killed_pids:
+                print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
+                print("    Restart manually: hermes gateway run")
+
+    except Exception as e:
+        logger.debug("Gateway restart during update failed: %s", e)
+
+
 def _coalesce_session_name_args(argv: list) -> list:
     """Join unquoted multi-word session names after -c/--continue and -r/--resume.
 
@@ -5818,6 +6220,16 @@ Examples:
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
     )
     update_parser.set_defaults(func=cmd_update)
+
+    # =========================================================================
+    # update-custom command (fork workflow: upstream → main → rebase custom)
+    # =========================================================================
+    update_custom_parser = subparsers.add_parser(
+        "update-custom",
+        help="Update from upstream via fork's custom branch (rebase workflow)",
+        description="Sync main from upstream, rebase custom onto main, reinstall deps, restart gateway"
+    )
+    update_custom_parser.set_defaults(func=cmd_update_custom)
     
     # =========================================================================
     # uninstall command
