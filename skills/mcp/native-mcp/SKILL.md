@@ -50,13 +50,17 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Restart Hermes Agent. On startup it will:
+Then apply the config change:
+1. Prefer `/reload-mcp` in runtimes that support it (for example the Hermes gateway CLI/Discord runtime)
+2. If reload is unavailable or fails, restart Hermes Agent
+
+After reload or restart, Hermes will:
 1. Connect to the server
 2. Discover available tools
 3. Register them with the prefix `mcp_time_*`
 4. Inject them into all platform toolsets
 
-You can then use the tools naturally -- just ask the agent to get the current time.
+Always verify the tools actually appeared after config changes. You can ask Hermes what MCP-backed tools are available, or inspect MCP status/logs if the server failed to connect.
 
 ## Configuration Reference
 
@@ -353,4 +357,4 @@ Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 - Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`
 - The native MCP client is independent of `mcporter` -- you can use both simultaneously
 - Server connections are persistent and shared across all conversations in the same agent process
-- Adding or removing servers requires restarting the agent (no hot-reload currently)
+- In runtimes that support it, use `/reload-mcp` to apply config changes without a full restart; otherwise restart the agent
