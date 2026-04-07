@@ -1,0 +1,141 @@
+#!/bin/bash
+#
+# commit-msg hook: enforce structured commit messages on `custom` branch.
+#
+# Every commit MUST have:
+#   1. A subject line
+#   2. A blank line
+#   3. ORIGINAL INCIDENT: section (minimum 20 chars of actual content)
+#   4. ISSUE section (minimum 20 chars of actual content)
+#   5. HOW THIS COMMIT FIXES IT: section (minimum 20 chars of actual content)
+#
+# "Actual content" means the text AFTER the header, excluding blank lines,
+# up to the next header or end of message. Single words, periods, or
+# placeholder text won't cut it.
+#
+# Exceptions:
+#   - Not on `custom` branch
+#   - Merge commits
+#   - Fixup/squash commits
+#   - Subject starts with "wip" or "WIP"
+#
+# Emergency bypass: git commit --no-verify
+
+MSG_FILE="$1"
+MSG=$(cat "$MSG_FILE")
+SUBJECT=$(head -1 "$MSG_FILE")
+
+# --- Skip conditions ---
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ "$BRANCH" != "custom" ]; then
+    exit 0
+fi
+
+if echo "$SUBJECT" | grep -qiE "^Merge "; then
+    exit 0
+fi
+
+if echo "$SUBJECT" | grep -qiE "^wip"; then
+    exit 0
+fi
+
+if echo "$SUBJECT" | grep -qiE "^(fixup|squash)!"; then
+    exit 0
+fi
+
+# --- Helper: extract section body and count chars ---
+# Uses awk to grab everything between a header and the next ALL-CAPS header
+# (or EOF), strips whitespace, counts non-empty characters.
+
+section_body_length() {
+    local header_pattern="$1"
+    echo "$MSG" | awk -v pat="$header_pattern" '
+        BEGIN { found=0; body="" }
+        $0 ~ pat { found=1; next }
+        found && /^[A-Z][A-Z ]+:/ { found=0 }
+        found {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if (length > 0) body = body $0
+        }
+        END { print length(body) }
+    '
+}
+
+MIN_CHARS=20
+ERRORS=""
+
+# --- Check ORIGINAL INCIDENT ---
+if ! echo "$MSG" | grep -qiE "^ORIGINAL INCIDENT"; then
+    ERRORS="${ERRORS}\n  ✗ Missing ORIGINAL INCIDENT: section"
+    ERRORS="${ERRORS}\n    What user-facing problem prompted this change?"
+else
+    LEN=$(section_body_length "^ORIGINAL INCIDENT")
+    if [ "$LEN" -lt "$MIN_CHARS" ]; then
+        ERRORS="${ERRORS}\n  ✗ ORIGINAL INCIDENT: too thin (${LEN} chars, need ${MIN_CHARS}+)"
+        ERRORS="${ERRORS}\n    Describe the actual problem — thread name, date, what broke."
+    fi
+fi
+
+# --- Check ISSUE ---
+if ! echo "$MSG" | grep -qiE "^ISSUES? "; then
+    if ! echo "$MSG" | grep -qiE "^ISSUE:"; then
+        ERRORS="${ERRORS}\n  ✗ Missing ISSUE: section"
+        ERRORS="${ERRORS}\n    What was wrong at the code level?"
+    else
+        LEN=$(section_body_length "^ISSUE:")
+        if [ "$LEN" -lt "$MIN_CHARS" ]; then
+            ERRORS="${ERRORS}\n  ✗ ISSUE: too thin (${LEN} chars, need ${MIN_CHARS}+)"
+            ERRORS="${ERRORS}\n    Explain what was broken/missing in the code."
+        fi
+    fi
+else
+    LEN=$(section_body_length "^ISSUE")
+    if [ "$LEN" -lt "$MIN_CHARS" ]; then
+        ERRORS="${ERRORS}\n  ✗ ISSUE section too thin (${LEN} chars, need ${MIN_CHARS}+)"
+        ERRORS="${ERRORS}\n    Explain what was broken/missing in the code."
+    fi
+fi
+
+# --- Check HOW THIS COMMIT FIXES IT ---
+if ! echo "$MSG" | grep -qiE "^HOW THIS COMMIT FIXES IT:"; then
+    ERRORS="${ERRORS}\n  ✗ Missing HOW THIS COMMIT FIXES IT: section"
+    ERRORS="${ERRORS}\n    What specifically does this change do and why?"
+else
+    LEN=$(section_body_length "^HOW THIS COMMIT FIXES IT:")
+    if [ "$LEN" -lt "$MIN_CHARS" ]; then
+        ERRORS="${ERRORS}\n  ✗ HOW THIS COMMIT FIXES IT: too thin (${LEN} chars, need ${MIN_CHARS}+)"
+        ERRORS="${ERRORS}\n    Explain the actual mechanism of the fix."
+    fi
+fi
+
+if [ -n "$ERRORS" ]; then
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  COMMIT REJECTED — incomplete commit message"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Every commit on 'custom' must explain:"
+    echo ""
+    echo -e "$ERRORS"
+    echo ""
+    echo "  Each section needs at least ${MIN_CHARS} chars of real content."
+    echo ""
+    echo "  Template:"
+    echo ""
+    echo "    type(scope): subject line"
+    echo ""
+    echo "    ORIGINAL INCIDENT:"
+    echo "    What happened — thread name, date, what the user saw break."
+    echo ""
+    echo "    ISSUE IN THE CODE:"
+    echo "    What was wrong at the code level — function, file, behavior."
+    echo ""
+    echo "    HOW THIS COMMIT FIXES IT:"
+    echo "    The specific change and why it solves the problem."
+    echo ""
+    echo "  Bypass: git commit --no-verify"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    exit 1
+fi
