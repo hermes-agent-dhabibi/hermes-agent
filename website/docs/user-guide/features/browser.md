@@ -194,7 +194,7 @@ The `browser` toolset must be included in your config's `toolsets` list or enabl
 
 ### `browser_navigate`
 
-Navigate to a URL. Must be called before any other browser tool. Initializes the Browserbase session.
+Navigate to a URL. Must be called before any other browser tool. Initializes the active browser backend session (Camofox, Browserbase, Browser Use, CDP, or local browser).
 
 ```
 Navigate to https://github.com/NousResearch
@@ -276,6 +276,10 @@ Check the browser console for any JavaScript errors
 ```
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
+
+### `browser_close`
+
+Close the browser session and release resources. Call this when done to free local or cloud browser resources.
 
 ## Practical Examples
 
