@@ -26,14 +26,15 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 SUMMARY_PREFIX = (
-    "[CONTEXT COMPACTION] Earlier turns in this conversation were compacted "
-    "to save context space. The summary below describes work that was "
-    "already completed, and the current session state may still reflect "
-    "that work (for example, files may already be changed). Use the summary "
-    "and the current state to continue from where things left off, and "
-    "avoid repeating work:"
+    "Another language model started to solve this problem and produced a "
+    "summary of its thinking process. You also have access to the state of "
+    "the tools that were used by that language model. Use this to build on "
+    "the work that has already been done and avoid duplicating work. Here is "
+    "the summary produced by the other language model, use the information "
+    "in this summary to assist with your own analysis:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+_LEGACY_COMPACTION_PREFIX = "[CONTEXT COMPACTION]"
 
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
@@ -48,6 +49,10 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+# Maximum tokens of preserved user messages from the summarized region.
+# Matches Codex's COMPACT_USER_MESSAGE_MAX_TOKENS = 20,000.
+_USER_MESSAGE_MAX_TOKENS = 20_000
 
 
 class ContextCompressor:
@@ -352,7 +357,7 @@ Target ~{summary_budget} tokens. Be specific — include file paths, command out
 Write only the summary body. Do not include any preamble or prefix."""
         else:
             # First compaction: summarize from scratch
-            prompt = f"""Create a structured handoff summary for a later assistant that will continue this conversation after earlier turns are compacted.
+            prompt = f"""You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
 TURNS TO SUMMARIZE:
 {content_to_summarize}
@@ -380,7 +385,7 @@ Use this exact structure:
 [Files read, modified, or created — with brief note on each]
 
 ## Next Steps
-[What needs to happen next to continue the work]
+[What needs to happen next to continue the work — be specific and actionable]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
@@ -388,7 +393,7 @@ Use this exact structure:
 ## Tools & Patterns
 [Which tools were used, how they were used effectively, and any tool-specific discoveries (e.g., preferred flags, working invocations, successful command patterns)]
 
-Target ~{summary_budget} tokens. Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions. The goal is to prevent the next assistant from repeating work or losing important details.
+Target ~{summary_budget} tokens. Be concise, structured, and focused on helping the next LLM seamlessly continue the work. Include file paths, command outputs, error messages, and concrete values rather than vague descriptions.
 
 Write only the summary body. Do not include any preamble or prefix."""
 
@@ -432,7 +437,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _with_summary_prefix(summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
         text = (summary or "").strip()
-        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
+        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _LEGACY_COMPACTION_PREFIX):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
@@ -606,6 +611,63 @@ Write only the summary body. Do not include any preamble or prefix."""
         return max(cut_idx, head_end + 1)
 
     # ------------------------------------------------------------------
+    # User message extraction (Codex-style)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_user_messages(
+        messages: List[Dict[str, Any]],
+        max_tokens: int = _USER_MESSAGE_MAX_TOKENS,
+    ) -> List[Dict[str, Any]]:
+        """Extract real user messages from a message slice, newest-first up to a token budget.
+
+        Filters out previous compaction summaries (identified by SUMMARY_PREFIX,
+        LEGACY_SUMMARY_PREFIX, and _LEGACY_COMPACTION_PREFIX).  Returns messages
+        in chronological order, ready for insertion into the compressed history.
+
+        Mirrors OpenAI Codex's ``collect_user_messages`` +
+        ``build_compacted_history_with_limit`` logic.
+        """
+        # Gather candidates in original order
+        candidates: List[Dict[str, Any]] = []
+        for msg in messages:
+            if msg.get("role") != "user":
+                continue
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            # Skip previous summaries
+            if (content.startswith(SUMMARY_PREFIX)
+                    or content.startswith(LEGACY_SUMMARY_PREFIX)
+                    or content.startswith(_LEGACY_COMPACTION_PREFIX)):
+                continue
+            candidates.append(msg)
+
+        if not candidates or max_tokens <= 0:
+            return []
+
+        # Select newest-first up to the token budget
+        selected: List[Dict[str, Any]] = []
+        remaining = max_tokens
+        for msg in reversed(candidates):
+            content = msg.get("content") or ""
+            tokens = len(content) // _CHARS_PER_TOKEN + 10
+            if tokens <= remaining:
+                selected.append(msg.copy())
+                remaining -= tokens
+            else:
+                # Truncate the message to fit the remaining budget
+                chars_budget = remaining * _CHARS_PER_TOKEN
+                if chars_budget > 100:  # only include if meaningful
+                    truncated = {**msg, "content": content[:chars_budget] + "\n...[truncated]"}
+                    selected.append(truncated)
+                break
+
+        # Reverse back to chronological order
+        selected.reverse()
+        return selected
+
+    # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
 
@@ -680,7 +742,20 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize)
 
+        # Phase 3b: Extract real user messages from summarized region (Codex-style).
+        # These are placed BEFORE the summary so the model sees the user's actual
+        # asks as the primary signal, with the summary as supplementary context.
+        preserved_user_msgs = self._collect_user_messages(turns_to_summarize)
+        if preserved_user_msgs and not self.quiet_mode:
+            logger.info(
+                "Preserved %d user message(s) from summarized region",
+                len(preserved_user_msgs),
+            )
+
         # Phase 4: Assemble compressed message list
+        # Order: [head] → [preserved user messages] → [summary] → [tail]
+        # This matches Codex's ordering where user messages appear before the
+        # summary so the model sees the user's real asks as primary signal.
         compressed = []
         for i in range(compress_start):
             msg = messages[i].copy()
@@ -691,40 +766,27 @@ Write only the summary body. Do not include any preamble or prefix."""
                 )
             compressed.append(msg)
 
-        _merge_summary_into_tail = False
+        # Insert preserved user messages from the summarized region.
+        # These must alternate correctly with what precedes and follows them.
+        for umsg in preserved_user_msgs:
+            compressed.append(umsg)
+
+        # Insert the summary.  The summary always goes after preserved user
+        # messages and before the tail — this is the "summary last" design
+        # from Codex that keeps the model focused on user asks.
         if summary:
-            last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-            first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-            # Pick a role that avoids consecutive same-role with both neighbors.
-            # Priority: avoid colliding with head (already committed), then tail.
-            if last_head_role in ("assistant", "tool"):
-                summary_role = "user"
-            else:
-                summary_role = "assistant"
-            # If the chosen role collides with the tail AND flipping wouldn't
-            # collide with the head, flip it.
-            if summary_role == first_tail_role:
-                flipped = "assistant" if summary_role == "user" else "user"
-                if flipped != last_head_role:
-                    summary_role = flipped
-                else:
-                    # Both roles would create consecutive same-role messages
-                    # (e.g. head=assistant, tail=user — neither role works).
-                    # Merge the summary into the first tail message instead
-                    # of inserting a standalone message that breaks alternation.
-                    _merge_summary_into_tail = True
-            if not _merge_summary_into_tail:
-                compressed.append({"role": summary_role, "content": summary})
+            # Use "user" role for the summary.  Codex always uses "user" role
+            # for both preserved user messages and the summary.  The framing
+            # in SUMMARY_PREFIX ("Another language model started to solve this
+            # problem...") prevents the model from treating it as a new request.
+            summary_role = "user"
+            compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:
                 logger.debug("No summary model available — middle turns dropped without summary")
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
-            if _merge_summary_into_tail and i == compress_end:
-                original = msg.get("content") or ""
-                msg["content"] = summary + "\n\n" + original
-                _merge_summary_into_tail = False
             compressed.append(msg)
 
         self.compression_count += 1
