@@ -5794,6 +5794,20 @@ def config_command(args):
         
         print()
     
+    elif subcmd == "sync":
+        from hermes_cli.config_sync import sync_config
+        dry_run = getattr(args, 'dry_run', False)
+        result = sync_config(dry_run=dry_run)
+        print()
+        if result["added"]:
+            if dry_run:
+                print(color(f"🔍 {result['message']}", Colors.CYAN))
+            else:
+                print(color(f"✓ {result['message']}", Colors.GREEN))
+        else:
+            print(color(f"✓ {result['message']}", Colors.GREEN))
+        print()
+    
     elif subcmd == "check":
         # Non-interactive check for what's missing
         print()
@@ -5841,6 +5855,8 @@ def config_command(args):
         print("  hermes config set <key> <value>   Set a config value")
         print("  hermes config check     Check for missing/outdated config")
         print("  hermes config migrate   Update config with new options")
+        print("  hermes config sync      Backfill missing keys from defaults")
+        print("  hermes config sync --dry-run   Show what would be added")
         print("  hermes config path      Show config file path")
         print("  hermes config env-path  Show .env file path")
         sys.exit(1)
