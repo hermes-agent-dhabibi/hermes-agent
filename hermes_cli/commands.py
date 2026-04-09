@@ -130,7 +130,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
-               cli_only=True),
+               cli_only=True, subcommands=("show", "edit", "set", "check", "migrate",
+                                            "sync", "path", "env-path")),
+    CommandDef("config-sync", "Backfill missing config keys from defaults", "Configuration",
+               aliases=("configsync",)),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
