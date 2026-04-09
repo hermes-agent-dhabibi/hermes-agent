@@ -12579,6 +12579,16 @@ Examples:
     # config migrate
     config_subparsers.add_parser("migrate", help="Update config with new options")
 
+    # config sync
+    config_sync = config_subparsers.add_parser(
+        "sync",
+        help="Backfill missing config keys from defaults into config.yaml"
+    )
+    config_sync.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be added without writing"
+    )
+
     config_parser.set_defaults(func=cmd_config)
 
     # =========================================================================
