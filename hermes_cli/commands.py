@@ -255,7 +255,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
-               cli_only=True, desktop="terminal"),
+               cli_only=True, subcommands=("show", "edit", "set", "check", "migrate",
+                                            "sync", "path", "env-path"), desktop="terminal"),
+    CommandDef("config-sync", "Backfill missing config keys from defaults", "Configuration",
+               aliases=("configsync",)),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
