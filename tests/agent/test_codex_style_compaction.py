@@ -48,16 +48,19 @@ def _mock_summary_response(text="summary of work done"):
 # ------------------------------------------------------------------
 
 class TestSummaryPrefixFraming:
-    """The new SUMMARY_PREFIX should use Codex's 'another language model' framing."""
+    """The SUMMARY_PREFIX should use identity-preserving checkpoint framing."""
 
-    def test_summary_prefix_mentions_another_model(self):
-        assert "Another language model" in SUMMARY_PREFIX
+    def test_summary_prefix_mentions_earlier_work(self):
+        assert "Earlier in this conversation" in SUMMARY_PREFIX
 
     def test_summary_prefix_mentions_building_on_work(self):
-        assert "build on" in SUMMARY_PREFIX
+        assert "Build on" in SUMMARY_PREFIX
 
-    def test_summary_prefix_mentions_avoid_duplicating(self):
-        assert "avoid duplicating" in SUMMARY_PREFIX
+    def test_summary_prefix_mentions_avoid_redoing(self):
+        assert "avoid re-doing" in SUMMARY_PREFIX
+
+    def test_summary_prefix_mentions_tool_state(self):
+        assert "tools you used" in SUMMARY_PREFIX
 
     def test_summary_prefix_does_not_use_old_context_compaction_prefix(self):
         assert not SUMMARY_PREFIX.startswith("[CONTEXT COMPACTION]")
@@ -83,7 +86,7 @@ class TestLegacyPrefixStripping:
         text = f"{SUMMARY_PREFIX}\nsome summary"
         result = compressor._with_summary_prefix(text)
         # Should not double-prefix
-        assert result.count("Another language model") == 1
+        assert result.count("Earlier in this conversation") == 1
 
 
 # ------------------------------------------------------------------
