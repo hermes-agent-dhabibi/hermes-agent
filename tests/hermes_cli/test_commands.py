@@ -190,7 +190,10 @@ class TestGatewayHelpLines:
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
-                assert f"`/{cmd.name}" not in joined, \
+                # Use a word-boundary check to avoid false positives from
+                # compound names (e.g. /config is cli_only but /config-sync
+                # is a separate gateway-accessible command).
+                assert f"`/{cmd.name}`" not in joined and f"`/{cmd.name} " not in joined, \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
     def test_includes_alias_note_for_bg(self):

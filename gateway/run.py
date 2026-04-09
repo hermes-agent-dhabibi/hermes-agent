@@ -3097,6 +3097,9 @@ class GatewayRunner:
         if canonical == "update":
             return await self._handle_update_command(event)
 
+        if canonical == "config-sync":
+            return await self._handle_config_sync_command(event)
+
         if canonical == "debug":
             return await self._handle_debug_command(event)
 
@@ -6835,6 +6838,17 @@ class GatewayRunner:
         count_msg = f" ({count} commands)" if count > 1 else ""
         logger.info("User denied %d dangerous command(s) via /deny", count)
         return f"❌ Command{'s' if count > 1 else ''} denied{count_msg}."
+
+    async def _handle_config_sync_command(self, event: MessageEvent) -> str:
+        """Handle /config-sync — backfill missing config keys from defaults."""
+        from hermes_cli.config_sync import sync_config
+
+        try:
+            result = sync_config()
+            return f"✓ {result['message']}"
+        except Exception as e:
+            logger.exception("config-sync failed")
+            return f"❌ Config sync failed: {e}"
 
     # Platforms where /update is allowed.  ACP, API server, and webhooks are
     # programmatic interfaces that should not trigger system updates.
