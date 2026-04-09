@@ -7715,6 +7715,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "version":
             return await self._handle_version_command(event)
 
+        if canonical == "config-sync":
+            return await self._handle_config_sync_command(event)
+
         if canonical == "debug":
             return await self._handle_debug_command(event)
 
@@ -11609,6 +11612,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
+
+    async def _handle_config_sync_command(self, event: MessageEvent) -> str:
+        """Backfill missing config keys from defaults."""
+        from hermes_cli.config_sync import sync_config
+
+        try:
+            result = sync_config()
+            return f"Config sync: {result['message']}"
+        except Exception as exc:
+            logger.exception("config-sync failed")
+            return f"Config sync failed: {exc}"
 
 
     # Built-in messaging platforms where the ``/update`` command is allowed.
