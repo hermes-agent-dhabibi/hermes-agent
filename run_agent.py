@@ -6751,6 +6751,19 @@ class AIAgent:
 
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
 
+        # Debug: log the full compaction result with session ID
+        _preserved_user = [m for m in compressed if m.get("role") == "user" and not (m.get("content") or "").startswith(("[CONTEXT", "Earlier in this conversation"))]
+        _summary_msgs = [m for m in compressed if (m.get("content") or "").startswith("Earlier in this conversation")]
+        logger.debug(
+            "[DEBUG] compaction complete: session=%s msgs=%d→%d preserved_user=%d has_summary=%s",
+            self.session_id, len(messages), len(compressed),
+            len(_preserved_user), bool(_summary_msgs),
+        )
+        for i, m in enumerate(compressed):
+            role = m.get("role", "?")
+            content = (m.get("content") or "")[:200]
+            logger.debug("[DEBUG] compacted[%d] role=%s: %s", i, role, content)
+
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})

@@ -464,6 +464,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
+            logger.debug(
+                "[DEBUG] compaction summary output (%d chars):\n%s",
+                len(summary), summary,
+            )
             return self._with_summary_prefix(summary)
         except RuntimeError:
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
