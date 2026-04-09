@@ -694,6 +694,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
+            logger.debug(
+                "[DEBUG] compaction summary output (%d chars):\n%s",
+                len(summary), summary,
+            )
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
