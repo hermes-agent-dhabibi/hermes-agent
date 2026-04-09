@@ -26,12 +26,10 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 SUMMARY_PREFIX = (
-    "Another language model started to solve this problem and produced a "
-    "summary of its thinking process. You also have access to the state of "
-    "the tools that were used by that language model. Use this to build on "
-    "the work that has already been done and avoid duplicating work. Here is "
-    "the summary produced by the other language model, use the information "
-    "in this summary to assist with your own analysis:"
+    "Earlier in this conversation, you worked on this problem. Your previous "
+    "thinking was compacted into the checkpoint summary below. The state of "
+    "tools you used (files, terminals, etc.) still reflects that earlier work. "
+    "Build on what you already accomplished and avoid re-doing work:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 _LEGACY_COMPACTION_PREFIX = "[CONTEXT COMPACTION]"
