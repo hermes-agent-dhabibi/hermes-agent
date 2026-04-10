@@ -2441,9 +2441,20 @@ class DiscordAdapter(BasePlatformAdapter):
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
                             logger.info("[Discord] Cached user document: %s", cached_path)
-                            # Inject text content for plain-text documents (capped at 100 KB)
+                            # Inject text content for text-readable documents (capped at 100 KB).
+                            # Covers code files, config files, markup, and plain text —
+                            # anything with a text/* MIME type or known text-like types.
+                            _TEXT_LIKE_MIMES = ("text/", "application/json", "application/jsonl")
+                            _BINARY_EXTS = {".pdf", ".zip", ".docx", ".xlsx", ".pptx"}
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            _is_text = (
+                                ext not in _BINARY_EXTS
+                                and (
+                                    any(doc_mime.startswith(p) for p in _TEXT_LIKE_MIMES)
+                                    or ext in (".json", ".jsonl", ".xml", ".csv", ".tsv", ".svg")
+                                )
+                            )
+                            if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"
