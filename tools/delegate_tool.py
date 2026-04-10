@@ -20,9 +20,15 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+
+# Threading-local flag so terminal_tool can detect it's running inside a
+# subagent and apply a timeout cap.  Set to True in the child thread before
+# run_conversation(), cleared in finally.
+_subagent_context = threading.local()
 
 
 # Tools that children must never have access to
@@ -38,11 +44,24 @@ MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+SUBAGENT_TERMINAL_TIMEOUT_CAP = 300  # seconds — prevent hung servers from blocking forever
 
 
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+def get_subagent_timeout_cap() -> Optional[int]:
+    """Return the terminal timeout cap if running inside a subagent thread, else None.
+
+    Called by terminal_tool to prevent hung foreground servers from blocking
+    subagent sessions forever.  Uses threading.local so parent threads are
+    never affected.
+    """
+    if getattr(_subagent_context, 'is_subagent', False):
+        return getattr(_subagent_context, 'timeout_cap', SUBAGENT_TERMINAL_TIMEOUT_CAP)
+    return None
 
 
 def _build_child_system_prompt(
@@ -72,6 +91,15 @@ def _build_child_system_prompt(
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"
         "- Any issues encountered\n\n"
+        "CRITICAL — Terminal rules for subagents:\n"
+        "- NEVER start long-running servers or watchers in foreground mode "
+        "(e.g. uvicorn, npm run dev, python -m http.server, flask run, "
+        "npm start, node server.js, next dev, cargo run for servers). "
+        "A foreground server blocks the terminal forever and hangs your session.\n"
+        "- If you need to verify a server starts correctly, use background=true "
+        "and then process(action='kill') to stop it.\n"
+        "- Prefer build/compile verification (npm run build, python -c 'from app import ...') "
+        "over actually starting servers.\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough but concise -- your response is returned to the "
@@ -389,6 +417,11 @@ def _run_single_child(
                 logger.debug("Failed to bind child to leased credential: %s", exc)
 
     try:
+        # Mark this thread as a subagent context so terminal_tool can
+        # apply a timeout cap (prevents hung foreground servers).
+        _subagent_context.is_subagent = True
+        _subagent_context.timeout_cap = SUBAGENT_TERMINAL_TIMEOUT_CAP
+
         result = child.run_conversation(user_message=goal)
 
         # Flush any remaining batched progress to gateway
@@ -498,6 +531,9 @@ def _run_single_child(
         }
 
     finally:
+        # Clear subagent context flag
+        _subagent_context.is_subagent = False
+
         if child_pool is not None and leased_cred_id is not None:
             try:
                 child_pool.release_lease(leased_cred_id)

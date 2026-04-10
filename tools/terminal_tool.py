@@ -1193,6 +1193,20 @@ def terminal_tool(
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
+        # Cap timeout for subagent threads to prevent hung foreground
+        # servers from blocking the entire delegation for 40+ minutes.
+        try:
+            from tools.delegate_tool import get_subagent_timeout_cap
+            subagent_cap = get_subagent_timeout_cap()
+            if subagent_cap is not None and effective_timeout > subagent_cap:
+                logger.info(
+                    "Capping subagent terminal timeout from %ds to %ds",
+                    effective_timeout, subagent_cap,
+                )
+                effective_timeout = subagent_cap
+        except ImportError:
+            pass  # delegate_tool not loaded
+
         # Start cleanup thread
         _start_cleanup_thread()
 
