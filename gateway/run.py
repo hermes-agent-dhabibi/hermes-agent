@@ -351,6 +351,64 @@ def _dequeue_pending_text(adapter, session_key: str) -> str | None:
     return text
 
 
+def _format_reasoning_for_display(
+    reasoning: str,
+    *,
+    max_lines: int = 120,
+    max_chars: int = 12000,
+    tail_lines: int = 24,
+    tail_chars: int = 2400,
+) -> str:
+    """Format model reasoning for gateway display without crushing it to mush."""
+    text = str(reasoning or "").strip()
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    if len(lines) <= max_lines and len(text) <= max_chars:
+        return text
+
+    head_line_budget = max(1, max_lines - tail_lines)
+    head_lines = lines[:head_line_budget]
+    tail_lines_list = lines[-tail_lines:] if tail_lines > 0 else []
+    omitted_line_count = max(0, len(lines) - len(head_lines) - len(tail_lines_list))
+
+    head_text = "\n".join(head_lines).strip()
+    tail_text = "\n".join(tail_lines_list).strip()
+
+    if len(head_text) > max_chars:
+        trimmed = head_text[: max_chars - 64].rstrip()
+        return f"{trimmed}\n\n_... (reasoning truncated after {max_chars:,} chars)_"
+
+    remaining_chars = max_chars - len(head_text)
+    if tail_text and remaining_chars > 96:
+        tail_budget = min(tail_chars, max(0, remaining_chars - 96))
+        if len(tail_text) > tail_budget > 0:
+            tail_text = tail_text[-tail_budget:].lstrip()
+            first_newline = tail_text.find("\n")
+            if 0 <= first_newline < len(tail_text) - 1:
+                tail_text = tail_text[first_newline + 1 :]
+        elif tail_budget <= 0:
+            tail_text = ""
+
+    omission_bits = []
+    if omitted_line_count > 0:
+        omission_bits.append(f"{omitted_line_count} lines")
+    omitted_chars = max(0, len(text) - len(head_text) - len(tail_text))
+    if omitted_chars > 0:
+        omission_bits.append(f"~{omitted_chars:,} chars")
+    omission_label = ", ".join(omission_bits) or "middle omitted"
+
+    if tail_text:
+        return (
+            f"{head_text}\n"
+            f"_... ({omission_label} omitted) ..._\n"
+            f"{tail_text}"
+        )
+
+    return f"{head_text}\n\n_... ({omission_label} omitted)_"
+
+
 def _check_unavailable_skill(command_name: str) -> str | None:
     """Check if a command matches a known-but-inactive skill.
 
@@ -2986,13 +3044,7 @@ class GatewayRunner:
             if getattr(self, "_show_reasoning", False) and response:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
+                    display_reasoning = _format_reasoning_for_display(last_reasoning)
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
             # Emit agent:end hook
