@@ -857,7 +857,12 @@ class DiscordAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
     ) -> SendResult:
-        """Edit a previously sent Discord message."""
+        """Edit a previously sent Discord message.
+
+        Discord edits can't fan out into follow-up messages from this API, so
+        fail fast on oversize content and let the stream consumer do the right
+        thing instead of silently chopping off the tail.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
@@ -867,7 +872,7 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+                return SendResult(success=False, error="message_too_long")
             await msg.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
