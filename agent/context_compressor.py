@@ -4,13 +4,15 @@ Self-contained class with its own OpenAI client for summarization.
 Uses auxiliary model (cheap/fast) to summarize middle turns while
 protecting head and tail context.
 
-Improvements over v1:
+Improvements over v2:
   - Structured summary template (Goal, Progress, Decisions, Files, Next Steps)
   - Iterative summary updates (preserves info across multiple compactions)
   - Token-budget tail protection instead of fixed message count
   - Tool output pruning before LLM summarization (cheap pre-pass)
   - Scaled summary budget (proportional to compressed content)
   - Richer tool call/result detail in summarizer input
+  - Preserve recent real user messages from the compacted region
+  - Order compacted history as head → preserved user messages → summary → tail
 """
 
 import logging
@@ -60,8 +62,10 @@ class ContextCompressor:
       1. Prune old tool results (cheap, no LLM call)
       2. Protect head messages (system prompt + first exchange)
       3. Protect tail messages by token budget (most recent ~20K tokens)
-      4. Summarize middle turns with structured LLM prompt
-      5. On subsequent compactions, iteratively update the previous summary
+      4. Summarize middle turns with a structured LLM prompt
+      5. Preserve recent real user messages from the compacted region
+      6. Assemble compacted history as head → preserved user messages → summary → tail
+      7. On subsequent compactions, iteratively update the previous summary
     """
 
     def __init__(
@@ -354,7 +358,7 @@ Target ~{summary_budget} tokens. Be specific — include file paths, command out
 
 Write only the summary body. Do not include any preamble or prefix."""
         else:
-            # First compaction: summarize from scratch
+            # First compaction: create a fresh checkpoint summary from scratch
             prompt = f"""You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
 TURNS TO SUMMARIZE:
@@ -627,7 +631,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         LEGACY_SUMMARY_PREFIX, and _LEGACY_COMPACTION_PREFIX).  Returns messages
         in chronological order, ready for insertion into the compressed history.
 
-        Mirrors OpenAI Codex's ``collect_user_messages`` +
+        Inspired by OpenAI Codex's ``collect_user_messages`` +
         ``build_compacted_history_with_limit`` logic.
         """
         # Gather candidates in original order
@@ -680,8 +684,10 @@ Write only the summary body. Do not include any preamble or prefix."""
           1. Prune old tool results (cheap pre-pass, no LLM call)
           2. Protect head messages (system prompt + first exchange)
           3. Find tail boundary by token budget (~20K tokens of recent context)
-          4. Summarize middle turns with structured LLM prompt
-          5. On re-compression, iteratively update the previous summary
+          4. Summarize middle turns with a structured LLM prompt
+          5. Preserve recent real user messages from the compacted region
+          6. Assemble compacted history as head → preserved user messages → summary → tail
+          7. On re-compression, iteratively update the previous summary
 
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
@@ -744,8 +750,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize)
 
-        # Phase 3b: Extract real user messages from summarized region (Codex-style).
-        # These are placed BEFORE the summary so the model sees the user's actual
+        # Phase 3b: Extract real user messages from the summarized region.
+        # These are placed before the summary so the model sees the user's actual
         # asks as the primary signal, with the summary as supplementary context.
         preserved_user_msgs = self._collect_user_messages(turns_to_summarize)
         if preserved_user_msgs and not self.quiet_mode:
@@ -754,10 +760,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 len(preserved_user_msgs),
             )
 
-        # Phase 4: Assemble compressed message list
-        # Order: [head] → [preserved user messages] → [summary] → [tail]
-        # This matches Codex's ordering where user messages appear before the
-        # summary so the model sees the user's real asks as primary signal.
+        # Phase 4: Assemble the compacted message list.
+        # Order: [head] → [preserved user messages] → [summary] → [tail].
+        # Putting preserved user messages before the summary keeps user intent
+        # as the primary signal, with the summary acting as supporting context.
         compressed = []
         for i in range(compress_start):
             msg = messages[i].copy()
@@ -769,18 +775,17 @@ Write only the summary body. Do not include any preamble or prefix."""
             compressed.append(msg)
 
         # Insert preserved user messages from the summarized region.
-        # These must alternate correctly with what precedes and follows them.
+        # Consecutive user-role messages are acceptable here; the preserved user
+        # messages are meant to carry forward actual user intent verbatim.
         for umsg in preserved_user_msgs:
             compressed.append(umsg)
 
-        # Insert the summary.  The summary always goes after preserved user
-        # messages and before the tail — this is the "summary last" design
-        # from Codex that keeps the model focused on user asks.
+        # Insert the summary after preserved user messages and before the tail.
+        # This keeps the user's actual asks ahead of the checkpoint summary.
         if summary:
-            # Use "user" role for the summary.  Codex always uses "user" role
-            # for both preserved user messages and the summary.  The framing
-            # in SUMMARY_PREFIX ("Another language model started to solve this
-            # problem...") prevents the model from treating it as a new request.
+            # Use "user" role for the summary. The checkpoint framing in
+            # SUMMARY_PREFIX distinguishes it from a new user request while
+            # keeping the handoff close to the preserved user context.
             summary_role = "user"
             compressed.append({"role": summary_role, "content": summary})
         else:
