@@ -1194,6 +1194,7 @@ def resolve_provider_client(
     explicit_base_url: str = None,
     explicit_api_key: str = None,
     is_vision: bool = False,
+    api_mode: str = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
