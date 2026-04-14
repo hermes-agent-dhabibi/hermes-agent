@@ -110,6 +110,22 @@ class TestDiscoverBundledSkills:
 
         assert [name for name, _ in _discover_bundled_skills(tmp_path)] == ["umbrella"]
 
+    def test_follows_symlinked_category_directories(self, tmp_path):
+        external_category = tmp_path.parent / "external-category"
+        skill_dir = external_category / "linked-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: linked-skill\n---\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "category").symlink_to(external_category, target_is_directory=True)
+
+        skills = _discover_bundled_skills(tmp_path)
+
+        assert [(name, path.name) for name, path in skills] == [
+            ("linked-skill", "linked-skill")
+        ]
+
 
 class TestReadSkillName:
     def test_name_from_frontmatter_with_dir_name_fallbacks(self, tmp_path):

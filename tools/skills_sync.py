@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
         except (ValueError, TypeError):
             pass
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
 from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace, atomic_write_text
 
@@ -262,7 +262,7 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
     if not bundled_dir.exists():
         return skills
 
-    for skill_md in bundled_dir.rglob("SKILL.md"):
+    for skill_md in iter_skill_index_files(bundled_dir, "SKILL.md"):
         # Exclusions apply inside the bundled tree. The install prefix itself
         # may legitimately contain names such as ``venv`` or ``site-packages``;
         # treating those parent components as skill content makes every wheel
@@ -708,9 +708,13 @@ def _recover_renamed_skill(
     return None
 
 
-def sync_skills(quiet: bool = False) -> dict:
+def sync_skills(quiet: bool = False, bundled_dir: Optional[Path] = None) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
+
+    Args:
+        quiet: Suppress per-skill output.
+        bundled_dir: Override the bundled skills source directory.
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
@@ -732,7 +736,8 @@ def sync_skills(quiet: bool = False) -> dict:
             "seeding essential skills only)"
         )
 
-    bundled_dir = _get_bundled_dir()
+    if bundled_dir is None:
+        bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {
             "copied": [], "updated": [], "skipped": 0,
