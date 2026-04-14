@@ -989,6 +989,14 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "SEARXNG_URL": {
+        "description": "SearXNG instance URL for meta-search (search backend)",
+        "prompt": "SearXNG URL (e.g. http://localhost:8888)",
+        "url": "https://docs.searxng.org/",
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
     "FIRECRAWL_GATEWAY_URL": {
         "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
         "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",
@@ -3072,7 +3080,7 @@ def set_config_value(key: str, value: str):
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
         'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'SEARXNG_URL',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
