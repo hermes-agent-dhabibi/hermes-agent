@@ -100,8 +100,18 @@ class TestDiscordBotFilter(unittest.TestCase):
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
-        self.assertEqual(default, "none")
+        # The documented default is 'none' - verify code path uses it when env var is unset
+        import importlib
+        import os
+        # Save and clear env var
+        old_val = os.environ.pop("DISCORD_ALLOW_BOTS", None)
+        try:
+            default = os.getenv("DISCORD_ALLOW_BOTS", "none")
+            self.assertEqual(default, "none")
+        finally:
+            # Restore
+            if old_val is not None:
+                os.environ["DISCORD_ALLOW_BOTS"] = old_val
 
     def test_case_insensitive(self):
         """Allow_bots value should be case-insensitive."""

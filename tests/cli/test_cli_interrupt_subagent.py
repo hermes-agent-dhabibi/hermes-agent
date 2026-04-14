@@ -63,7 +63,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         parent._delegate_depth = 0
         parent._delegate_spinner = None
         parent.tool_progress_callback = None
-        parent._execution_thread_id = None
+        parent._execution_thread_id = threading.get_ident()  # Simulate running agent
 
         # We'll track what happens with _active_children
         original_children = parent._active_children
