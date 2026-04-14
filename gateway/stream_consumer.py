@@ -40,7 +40,7 @@ _COMMENTARY = object()
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""
-    edit_interval: float = 1.0
+    edit_interval: float = 0.3
     buffer_threshold: int = 40
     cursor: str = " ▉"
 
