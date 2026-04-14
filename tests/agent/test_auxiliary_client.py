@@ -680,6 +680,57 @@ class TestVisionClientFallback:
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
 
+    def test_copilot_vision_request_header_set_on_async_client(self, monkeypatch):
+        """Vision resolution sets Copilot-Vision-Request header for copilot backends."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "gho_test_token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "env",
+                },
+            ),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="copilot"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-4.1"),
+        ):
+            provider, client, model = resolve_vision_provider_client(
+                provider="auto", async_mode=True)
+
+        assert provider == "copilot"
+        assert client is not None
+        assert model == "gpt-4.1"
+        # The Copilot-Vision-Request header must be present
+        assert hasattr(client, "_custom_headers")
+        assert client._custom_headers.get("Copilot-Vision-Request") == "true"
+
+    def test_copilot_vision_request_header_set_on_sync_client(self, monkeypatch):
+        """Sync vision backend also gets the Copilot-Vision-Request header."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "gho_test_token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "env",
+                },
+            ),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            from agent.auxiliary_client import _resolve_strict_vision_backend
+            client, model = _resolve_strict_vision_backend("copilot")
+
+        assert client is not None
+        assert hasattr(client, "_custom_headers")
+        assert client._custom_headers.get("Copilot-Vision-Request") == "true"
+
 
 class TestAuxiliaryPoolAwareness:
     def test_try_nous_uses_pool_entry(self):
