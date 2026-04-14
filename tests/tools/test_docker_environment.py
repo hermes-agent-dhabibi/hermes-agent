@@ -1,5 +1,4 @@
 import logging
-from io import StringIO
 import subprocess
 import sys
 import types
@@ -221,18 +220,6 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
     # Should have stop and rm calls via Popen
     stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
     assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
-
-
-class _FakePopen:
-    def __init__(self, cmd, **kwargs):
-        self.cmd = cmd
-        self.kwargs = kwargs
-        self.stdout = StringIO("")
-        self.stdin = None
-        self.returncode = 0
-
-    def poll(self):
-        return self.returncode
 
 
 def _make_execute_only_env(forward_env=None):

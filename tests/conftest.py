@@ -1,12 +1,9 @@
 """Shared fixtures for the hermes-agent test suite."""
 
 import asyncio
-import os
 import signal
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -40,30 +37,6 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     # Avoid making real calls during tests if this key is set in the env files
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-
-
-@pytest.fixture()
-def tmp_dir(tmp_path):
-    """Provide a temporary directory that is cleaned up automatically."""
-    return tmp_path
-
-
-@pytest.fixture()
-def mock_config():
-    """Return a minimal hermes config dict suitable for unit tests."""
-    return {
-        "model": "test/mock-model",
-        "toolsets": ["terminal", "file"],
-        "max_turns": 10,
-        "terminal": {
-            "backend": "local",
-            "cwd": "/tmp",
-            "timeout": 30,
-        },
-        "compression": {"enabled": False},
-        "memory": {"memory_enabled": False, "user_profile_enabled": False},
-        "command_allowlist": [],
-    }
 
 
 # ── Global test timeout ─────────────────────────────────────────────────────

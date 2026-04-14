@@ -10,9 +10,7 @@ and that ``extract_content_or_reasoning()`` falls back to structured
 reasoning fields when content is empty.
 """
 
-import asyncio
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -30,11 +28,6 @@ def _make_response(content, **msg_attrs):
     message = types.SimpleNamespace(content=content, tool_calls=None, **msg_attrs)
     choice = types.SimpleNamespace(message=message)
     return types.SimpleNamespace(choices=[choice])
-
-
-def _run(coro):
-    """Run an async coroutine synchronously."""
-    return asyncio.get_event_loop().run_until_complete(coro)
 
 
 # ── mixture_of_agents_tool — reference model (line 146) ───────────────────
