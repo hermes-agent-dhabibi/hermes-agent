@@ -1,19 +1,6 @@
 """Tests for network.force_ipv4 — the socket.getaddrinfo monkey-patch."""
 
-import importlib
 import socket
-from unittest.mock import patch, MagicMock
-
-import pytest
-
-
-def _reload_constants():
-    """Reload hermes_constants to get a fresh apply_ipv4_preference."""
-    import hermes_constants
-    importlib.reload(hermes_constants)
-    return hermes_constants
-
-
 class TestApplyIPv4Preference:
     """Tests for apply_ipv4_preference()."""
 
