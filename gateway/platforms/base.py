@@ -2620,6 +2620,9 @@ class BasePlatformAdapter(ABC):
         # and quoted/backticked paths for LLM-formatted outputs. The extension
         # set is the shared MEDIA_DELIVERY_EXTS source of truth (built once into
         # MEDIA_TAG_CLEANUP_RE) so it can never drift from extract_local_files.
+        # Unquoted paths must be absolute (/...), home-relative (~/...), or
+        # Windows drive-letter absolute to avoid matching placeholders like
+        # MEDIA:<path> or MEDIA:foo.png.
         media_pattern = MEDIA_TAG_CLEANUP_RE
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()

@@ -400,6 +400,28 @@ class TestExtractMedia:
         )
         assert media == []
 
+    def test_media_tag_rejects_placeholders_and_non_paths(self):
+        """MEDIA: followed by non-path text like <path> should not match."""
+        non_path_cases = [
+            "MEDIA:<path>",
+            "MEDIA:placeholder",
+            "MEDIA:foo.png",
+            "MEDIA:bar",
+        ]
+        for content in non_path_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert media == [], f"Should not match: {content!r}"
+
+        valid_cases = [
+            ("MEDIA:/tmp/image.png", "/tmp/image.png"),
+            ("MEDIA:~/audio/voice.ogg", os.path.expanduser("~/audio/voice.ogg")),
+            ('MEDIA:"/path/to/file.mp4"', "/path/to/file.mp4"),
+        ]
+        for content, expected_path in valid_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"Should match: {content!r}"
+            assert media[0][0] == expected_path
+
 
 class TestMediaExtensionAllowlistParity:
     """Regression coverage for issue #34517 — the MEDIA: extension black hole.
@@ -808,8 +830,6 @@ class TestMediaDeliveryDefaultMode:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(notes)])
         assert out == [str(notes.resolve())]
-
-
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio
 # ---------------------------------------------------------------------------
