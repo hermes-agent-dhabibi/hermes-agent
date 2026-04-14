@@ -421,8 +421,6 @@ def _resolve_api_key_provider_secret(
             token, source = resolve_copilot_token()
             if token:
                 return token, source
-        except ValueError as exc:
-            logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
             pass
         return "", ""
