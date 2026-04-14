@@ -400,6 +400,28 @@ class TestExtractMedia:
         )
         assert media == []
 
+    def test_media_tag_rejects_placeholders_and_non_paths(self):
+        """MEDIA: followed by non-path text like <path> should not match."""
+        non_path_cases = [
+            "MEDIA:<path>",
+            "MEDIA:placeholder",
+            "MEDIA:foo.png",
+            "MEDIA:bar",
+        ]
+        for content in non_path_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert media == [], f"Should not match: {content!r}"
+
+        valid_cases = [
+            ("MEDIA:/tmp/image.png", "/tmp/image.png"),
+            ("MEDIA:~/audio/voice.ogg", os.path.expanduser("~/audio/voice.ogg")),
+            ('MEDIA:"/path/to/file.mp4"', "/path/to/file.mp4"),
+        ]
+        for content, expected_path in valid_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"Should match: {content!r}"
+            assert media[0][0] == expected_path
+
     # --- Code block / inline code / blockquote false-positive guards (#35695) ---
 
     def test_media_in_fenced_code_block_ignored(self):
@@ -953,7 +975,6 @@ class TestMediaDeliveryDefaultMode:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(notes)])
         assert out == [str(notes.resolve())]
-
     def test_root_home_deliverable_is_accepted(self, tmp_path, monkeypatch):
         """The motivating bug (#38106): a root-run gateway has ``$HOME=/root``,
         which is on the system-prefix denylist. A plain deliverable the agent
