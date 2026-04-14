@@ -16978,7 +16978,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-ticker",
     )
     cron_thread.start()
-    
+
+    # Ensure builtin cron jobs exist (e.g. nightly skill/memory review).
+    # Idempotent — only creates jobs that don't already exist by name.
+    try:
+        from gateway.builtin_cron import ensure_builtin_jobs
+        created = ensure_builtin_jobs()
+        if created:
+            logger.info("Registered builtin cron job(s): %s", ", ".join(created))
+    except Exception as e:
+        logger.warning("Builtin cron job registration failed: %s", e)
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
