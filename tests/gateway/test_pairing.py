@@ -1,9 +1,7 @@
 """Tests for gateway/pairing.py — DM pairing security system."""
 
 import json
-import os
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 from gateway.pairing import (
@@ -17,13 +15,6 @@ from gateway.pairing import (
     LOCKOUT_SECONDS,
     _secure_write,
 )
-
-
-def _make_store(tmp_path):
-    """Create a PairingStore with PAIRING_DIR pointed to tmp_path."""
-    with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-        return PairingStore()
-
 
 # ---------------------------------------------------------------------------
 # _secure_write
