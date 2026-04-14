@@ -329,6 +329,28 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_rejects_placeholders_and_non_paths(self):
+        """MEDIA: followed by non-path text like <path> should not match."""
+        non_path_cases = [
+            "MEDIA:<path>",
+            "MEDIA:placeholder",
+            "MEDIA:foo.png",
+            "MEDIA:bar",
+        ]
+        for content in non_path_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert media == [], f"Should not match: {content!r}"
+
+        valid_cases = [
+            ("MEDIA:/tmp/image.png", "/tmp/image.png"),
+            ("MEDIA:~/audio/voice.ogg", "~/audio/voice.ogg"),
+            ('MEDIA:"/path/to/file.mp4"', "/path/to/file.mp4"),
+        ]
+        for content, expected_path in valid_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"Should match: {content!r}"
+            assert media[0][0] == expected_path
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio
@@ -676,4 +698,3 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
-
