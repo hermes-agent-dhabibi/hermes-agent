@@ -321,6 +321,30 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
+    def test_media_tag_rejects_placeholders_and_non_paths(self):
+        """MEDIA: followed by non-path text like <path> should not match."""
+        # These should NOT be extracted as media paths
+        non_path_cases = [
+            "MEDIA:<path>",           # XML-style placeholder
+            "MEDIA:placeholder",      # bare word
+            "MEDIA:foo.png",          # relative path without /
+            "MEDIA:bar",              # no extension
+        ]
+        for content in non_path_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert media == [], f"Should not match: {content!r}"
+
+        # These SHOULD be extracted
+        valid_cases = [
+            ("MEDIA:/tmp/image.png", "/tmp/image.png"),
+            ("MEDIA:~/audio/voice.ogg", "~/audio/voice.ogg"),
+            ('MEDIA:"/path/to/file.mp4"', "/path/to/file.mp4"),
+        ]
+        for content, expected_path in valid_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"Should match: {content!r}"
+            assert media[0][0] == expected_path
+
 
 # ---------------------------------------------------------------------------
 # truncate_message
