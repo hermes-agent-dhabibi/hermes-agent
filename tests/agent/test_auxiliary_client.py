@@ -90,7 +90,9 @@ class TestReadCodexAccessToken:
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        # Mock pool check to ensure no pool entries interfere
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _read_codex_access_token()
         assert result is None
 
     def test_empty_token_returns_none(self, tmp_path, monkeypatch):
@@ -142,12 +144,14 @@ class TestReadCodexAccessToken:
             "version": 1,
             "providers": {
                 "openai-codex": {
-                    "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
+                    "tokens": {"access_token": expired_jwt, "refresh_token": "***"},
                 },
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        result = _read_codex_access_token()
+        # Mock pool check to ensure no pool entries interfere
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            result = _read_codex_access_token()
         assert result is None, "Expired JWT should return None"
 
     def test_valid_jwt_returns_token(self, tmp_path, monkeypatch):
@@ -626,7 +630,8 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+             patch("agent.auxiliary_client._resolve_task_provider_model", return_value=(None, None, None, None, None)), \
+             patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
         assert model is None
