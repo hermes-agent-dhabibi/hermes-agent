@@ -451,9 +451,14 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     return backfilled
 
 
-def sync_skills(quiet: bool = False) -> dict:
+def sync_skills(quiet: bool = False, bundled_dir: "Path | None" = None) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
+
+    Args:
+        quiet: Suppress per-skill output.
+        bundled_dir: Override the bundled skills source directory.
+                     If None, uses the default (repo's skills/ or HERMES_BUNDLED_SKILLS env).
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
@@ -473,7 +478,8 @@ def sync_skills(quiet: bool = False) -> dict:
             "optional_provenance_backfilled": [], "skipped_opt_out": True,
         }
 
-    bundled_dir = _get_bundled_dir()
+    if bundled_dir is None:
+        bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {
             "copied": [], "updated": [], "skipped": 0,
