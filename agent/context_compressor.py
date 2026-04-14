@@ -755,6 +755,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
             compressed.append(msg)
 
+        # Preserve user asks from the summarized middle region as standalone
+        # user messages before the summary handoff. This is the Codex-style
+        # behavior the custom compaction tests expect.
+        preserved_user_messages = []
+        for msg in turns_to_summarize:
+            if msg.get("role") != "user":
+                continue
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            if content.startswith(SUMMARY_PREFIX) or content.startswith(LEGACY_SUMMARY_PREFIX):
+                continue
+            preserved_user_messages.append({"role": "user", "content": content})
+        compressed.extend(preserved_user_messages)
+
         # If LLM summary failed, insert a static fallback so the model
         # knows context was lost rather than silently dropping everything.
         if not summary:
@@ -769,41 +784,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 f"recent messages below and the current state of any files or resources."
             )
 
-        _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-        first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in ("assistant", "tool"):
-            summary_role = "user"
-        else:
-            summary_role = "assistant"
-        # If the chosen role collides with the tail AND flipping wouldn't
-        # collide with the head, flip it.
-        if summary_role == first_tail_role:
-            flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
-                summary_role = flipped
-            else:
-                # Both roles would create consecutive same-role messages
-                # (e.g. head=assistant, tail=user — neither role works).
-                # Merge the summary into the first tail message instead
-                # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
-        if not _merge_summary_into_tail:
-            compressed.append({"role": summary_role, "content": summary})
+        # Codex-style compaction: always emit the summary as a standalone
+        # user-role handoff message. Consecutive user messages are allowed —
+        # the SUMMARY_PREFIX framing distinguishes the handoff from an active
+        # user ask, and tests assert against the old merge-into-tail behavior.
+        compressed.append({"role": "user", "content": summary})
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
-            if _merge_summary_into_tail and i == compress_end:
-                original = msg.get("content") or ""
-                msg["content"] = (
-                    summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
-                    + original
-                )
-                _merge_summary_into_tail = False
             compressed.append(msg)
 
         self.compression_count += 1

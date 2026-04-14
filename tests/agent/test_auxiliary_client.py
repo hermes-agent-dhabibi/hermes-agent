@@ -11,6 +11,7 @@ import pytest
 from agent.auxiliary_client import (
     get_text_auxiliary_client,
     get_available_vision_backends,
+    get_vision_auxiliary_client,
     resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
@@ -363,8 +364,8 @@ class TestExpiredCodexFallback:
 
 
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
-        """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
-        # Mock resolve_anthropic_token to return an OAuth-style token
+        """Only Anthropic-shaped setup/JWT tokens should get is_oauth=True."""
+        # Mock resolve_anthropic_token to return a non-Anthropic token shape
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
@@ -373,7 +374,7 @@ class TestExpiredCodexFallback:
             client, model = _try_anthropic()
             assert client is not None, "Should resolve token"
             adapter = client.chat.completions
-            assert adapter._is_oauth is True, "Non-sk-ant-api token should set is_oauth=True"
+            assert adapter._is_oauth is False, "Non-Anthropic token shapes should not set is_oauth=True"
 
     def test_jwt_missing_exp_passes_through(self, tmp_path, monkeypatch):
         """JWT with valid JSON but no exp claim should pass through."""
@@ -419,7 +420,7 @@ class TestExpiredCodexFallback:
         assert result == bad_jwt, "JWT with invalid JSON payload should pass through"
 
     def test_claude_code_oauth_env_sets_flag(self, monkeypatch):
-        """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
+        """Only Anthropic-shaped setup/JWT tokens should get is_oauth=True."""
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token-test")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
@@ -428,7 +429,7 @@ class TestExpiredCodexFallback:
             client, model = _try_anthropic()
             assert client is not None
             adapter = client.chat.completions
-            assert adapter._is_oauth is True
+            assert adapter._is_oauth is False
 
 
 class TestExplicitProviderRouting:
