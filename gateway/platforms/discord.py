@@ -857,12 +857,7 @@ class DiscordAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
     ) -> SendResult:
-        """Edit a previously sent Discord message.
-
-        Discord edits can't fan out into follow-up messages from this API, so
-        fail fast on oversize content and let the stream consumer do the right
-        thing instead of silently chopping off the tail.
-        """
+        """Edit a previously sent Discord message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
@@ -871,7 +866,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(chat_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                return SendResult(success=False, error="message_too_long")
+                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
             # Use get_partial_message to avoid an extra fetch round-trip.
             # Discord's API supports editing by ID directly; the fetch_message
             # call was redundant and often 503'd under load.
