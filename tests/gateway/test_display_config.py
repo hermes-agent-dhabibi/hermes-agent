@@ -220,7 +220,6 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "telegram", "streaming") is None
 
 
-# ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms
 # ---------------------------------------------------------------------------
 
