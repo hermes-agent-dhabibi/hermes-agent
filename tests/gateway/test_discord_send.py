@@ -78,3 +78,53 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
     assert channel.send.await_count == 2
     assert send_calls[0]["reference"] is ref_msg
     assert send_calls[1]["reference"] is None
+
+
+@pytest.mark.asyncio
+async def test_edit_message_uses_partial_message_not_fetch():
+    """edit_message should use get_partial_message (no network call), not fetch_message."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    partial_msg = MagicMock()
+    partial_msg.edit = AsyncMock()
+
+    channel = SimpleNamespace(
+        get_partial_message=MagicMock(return_value=partial_msg),
+        fetch_message=AsyncMock(side_effect=AssertionError("Should not fetch")),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.edit_message("555", "123", "updated content")
+
+    assert result.success is True
+    assert result.message_id == "123"
+    channel.get_partial_message.assert_called_once_with(123)
+    partial_msg.edit.assert_awaited_once()
+    # Verify fetch_message was NOT called
+    channel.fetch_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_message_rejects_oversized_content():
+    """edit_message returns error for content exceeding Discord's limit."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    channel = SimpleNamespace(
+        get_partial_message=MagicMock(),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    # Exceed the 2000-char limit
+    long_content = "x" * 2500
+    result = await adapter.edit_message("555", "123", long_content)
+
+    assert result.success is False
+    assert result.error == "message_too_long"
+    # Should not even attempt the edit
+    channel.get_partial_message.assert_not_called()
