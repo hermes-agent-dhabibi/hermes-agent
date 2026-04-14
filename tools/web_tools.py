@@ -81,7 +81,7 @@ def _load_web_config() -> dict:
         return {}
 
 def _get_backend() -> str:
-    """Determine which web backend to use.
+    """Determine which web backend to use for extract/crawl.
 
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
     Falls back to whichever API key is present for users who configured
@@ -107,8 +107,32 @@ def _get_backend() -> str:
     return "firecrawl"  # default (backward compat)
 
 
+def _get_search_backend() -> str:
+    """Determine which backend to use for web *search*.
+
+    Supports split routing: ``web.search_backend`` can be set independently
+    from ``web.backend`` (which controls extract/crawl).  This allows
+    SearXNG for search + Firecrawl for extraction — the recommended
+    three-tier stack (search → extract → interact).
+
+    Falls back to ``_get_backend()`` when ``search_backend`` is not set.
+    """
+    configured = (_load_web_config().get("search_backend") or "").lower().strip()
+    if configured in ("searxng", "parallel", "firecrawl", "tavily", "exa"):
+        return configured
+
+    # Auto-detect SearXNG when SEARXNG_URL is set, even without explicit config
+    if _has_env("SEARXNG_URL"):
+        return "searxng"
+
+    # Fall back to the general backend
+    return _get_backend()
+
+
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    if backend == "searxng":
+        return _has_env("SEARXNG_URL")
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -184,6 +208,7 @@ def _firecrawl_backend_help_suffix() -> str:
 def _web_requires_env() -> list[str]:
     """Return tool metadata env vars for the currently enabled web backends."""
     requires = [
+        "SEARXNG_URL",
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
@@ -956,6 +981,49 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+# ─── SearXNG Search Helper ────────────────────────────────────────────────────
+
+def _searxng_search(query: str, limit: int = 10) -> dict:
+    """Search using a self-hosted SearXNG instance.
+
+    Requires ``SEARXNG_URL`` env var pointing to the SearXNG base URL
+    (e.g. ``http://100.100.17.26:8888``).  The instance must have
+    ``json`` in ``search.formats`` in its settings.yml.
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    base_url = os.getenv("SEARXNG_URL", "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError(
+            "SEARXNG_URL environment variable not set. "
+            "Point it at your SearXNG instance (e.g. http://localhost:8888)"
+        )
+
+    logger.info("SearXNG search: '%s' (limit=%d)", query, limit)
+    response = httpx.get(
+        f"{base_url}/search",
+        params={"q": query, "format": "json"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    web_results = []
+    for i, result in enumerate(data.get("results", [])):
+        if i >= limit:
+            break
+        web_results.append({
+            "url": result.get("url", ""),
+            "title": result.get("title", ""),
+            "description": result.get("content", ""),
+            "position": i + 1,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
@@ -1082,8 +1150,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch to the configured backend
-        backend = _get_backend()
+        # Dispatch to the configured search backend (may differ from extract backend)
+        backend = _get_search_backend()
+
+        if backend == "searxng":
+            response_data = _searxng_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
@@ -1920,11 +1998,21 @@ def check_firecrawl_api_key() -> bool:
 
 
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
+    """Check whether the configured web backend is available.
+
+    Checks both the search backend and the extract/crawl backend, since they
+    can be configured independently (split routing).
+    """
+    # Check search backend
+    search_backend = _get_search_backend()
+    if _is_backend_available(search_backend):
+        return True
+
+    # Check extract/crawl backend
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in ("exa", "parallel", "firecrawl", "tavily"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("searxng", "exa", "parallel", "firecrawl", "tavily"))
 
 
 def check_auxiliary_model() -> bool:
