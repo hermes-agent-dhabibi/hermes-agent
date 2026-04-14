@@ -87,9 +87,13 @@ def resolve_copilot_token() -> tuple[str, str]:
     if token:
         valid, msg = validate_copilot_token(token)
         if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
+            # Don't raise — just return empty. The caller can use OAuth or other
+            # methods. Raising here causes spurious warnings when ghp_* is set
+            # in gh CLI but the actual Copilot runtime uses a different auth path.
+            logger.debug(
+                "gh auth token returned classic PAT (ghp_*), skipping: %s", msg
             )
+            return "", ""
         return token, "gh auth token"
 
     return "", ""
