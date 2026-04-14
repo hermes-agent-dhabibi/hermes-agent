@@ -712,6 +712,16 @@ class GatewayRunner:
             if not history or len(history) < 4:
                 return
 
+            # Ensure .env is loaded before resolving credentials (gateway is
+            # long-lived, flush_memories runs outside the normal conversation
+            # path where .env loading happens).
+            try:
+                load_dotenv(_env_path, override=True, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(_env_path, override=True, encoding="latin-1")
+            except Exception:
+                pass
+
             from run_agent import AIAgent
             runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
