@@ -36,6 +36,7 @@ Usage:
     hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
     hermes version             Show version
     hermes update              Update to latest version
+    hermes update-skills       Pull only built-in skills from upstream
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
     hermes sessions browse     Interactive session picker with search
@@ -11427,6 +11428,84 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
 
+def cmd_update_skills(args):
+    """Pull only bundled skills from upstream without changing code."""
+    import tempfile
+
+    print("Updating skills from upstream...")
+    print()
+
+    if not (PROJECT_ROOT / ".git").exists():
+        print("Not a git repository; cannot fetch upstream skills.")
+        sys.exit(1)
+
+    git_cmd = ["git"]
+    remote = subprocess.run(
+        git_cmd + ["remote", "get-url", "upstream"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if remote.returncode != 0:
+        print("Remote 'upstream' not found.")
+        print("Add it with: git remote add upstream https://github.com/NousResearch/hermes-agent.git")
+        sys.exit(1)
+
+    fetched = subprocess.run(
+        git_cmd + ["fetch", "upstream", "main"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if fetched.returncode != 0:
+        print(f"Failed to fetch upstream: {fetched.stderr.strip()}")
+        sys.exit(1)
+
+    with tempfile.TemporaryDirectory(prefix="hermes-skills-") as tmpdir:
+        archive = subprocess.Popen(
+            git_cmd + ["archive", "upstream/main", "--", "skills/"],
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        extracted = subprocess.run(
+            ["tar", "xf", "-"],
+            cwd=tmpdir,
+            stdin=archive.stdout,
+            capture_output=True,
+        )
+        if archive.stdout is not None:
+            archive.stdout.close()
+        archive.wait()
+        if archive.returncode != 0 or extracted.returncode != 0:
+            stderr = archive.stderr.read().decode() if archive.stderr else ""
+            print(f"Failed to extract upstream skills: {stderr.strip()}")
+            sys.exit(1)
+
+        extracted_skills = Path(tmpdir) / "skills"
+        if not extracted_skills.exists():
+            print("No skills directory found on upstream/main.")
+            sys.exit(1)
+
+        from tools.skills_sync import sync_skills
+
+        result = sync_skills(quiet=False, bundled_dir=extracted_skills)
+
+    print()
+    if result["copied"]:
+        print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+    if result.get("updated"):
+        print(f"  updated {len(result['updated'])}: {', '.join(result['updated'])}")
+    if result.get("user_modified"):
+        print(
+            f"  kept {len(result['user_modified'])} user-modified: "
+            f"{', '.join(result['user_modified'])}"
+        )
+    if not result["copied"] and not result.get("updated"):
+        print("  Skills are up to date")
+    print(f"Done: {result.get('total_bundled', 0)} upstream skills checked; code was unchanged.")
+
+
 def _coalesce_session_name_args(argv: list) -> list:
     """Join unquoted multi-word session names after -c/--continue and -r/--resume.
 
@@ -11460,6 +11539,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "insights",
         "version",
         "update",
+        "update-skills",
         "uninstall",
         "profile",
         "dashboard",
@@ -14978,6 +15058,16 @@ def main():
     # update command  (parser built in hermes_cli/subcommands/update.py)
     # =========================================================================
     build_update_parser(subparsers, cmd_update=cmd_update)
+
+    update_skills_parser = subparsers.add_parser(
+        "update-skills",
+        help="Pull bundled skills from upstream without changing code",
+        description=(
+            "Fetch skills/ from upstream/main and sync it into the active "
+            "Hermes profile without switching branches or updating code."
+        ),
+    )
+    update_skills_parser.set_defaults(func=cmd_update_skills)
 
     # =========================================================================
     # uninstall command  (parser built in hermes_cli/subcommands/uninstall.py)
