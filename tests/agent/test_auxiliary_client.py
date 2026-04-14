@@ -509,9 +509,115 @@ class TestNousAuxiliaryRefresh:
     def test_try_nous_prefers_runtime_credentials(self):
         fresh_base = "https://inference-api.nousresearch.com/v1"
         with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "stale-token"}),
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "***"}),
             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            mock_openai.return_value = MagicMock()
+            client, model = _try_nous()
+
+        assert client is not None
+        # No Portal recommendation → falls back to the hardcoded default.
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "fresh-agent-key"
+        assert mock_openai.call_args.kwargs["base_url"] == fresh_base
+
+    def test_available_vision_backends_include_anthropic_main_provider(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
+            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
+        ):
+            backends = get_available_vision_backends()
+
+        assert "anthropic" in backends
+
+    def test_resolve_provider_client_returns_native_anthropic_wrapper(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
+        ):
+            client, model = resolve_provider_client("anthropic")
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+        assert model == "claude-haiku-4-5-20251001"
+
+    def test_copilot_vision_request_header_set_on_async_client(self, monkeypatch):
+        """Vision resolution sets Copilot-Vision-Request header for copilot backends."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "***",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "env",
+                },
+            ),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="copilot"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-4.1"),
+        ):
+            provider, client, model = resolve_vision_provider_client(
+                provider="auto", async_mode=True)
+
+        assert provider == "copilot"
+        assert client is not None
+        assert model == "gpt-4.1"
+        assert hasattr(client, "_custom_headers")
+        assert client._custom_headers.get("Copilot-Vision-Request") == "true"
+
+    def test_copilot_vision_request_header_set_on_sync_client(self, monkeypatch):
+        """Sync vision backend also gets the Copilot-Vision-Request header."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "***",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "env",
+                },
+            ),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            from agent.auxiliary_client import _resolve_strict_vision_backend
+            client, model = _resolve_strict_vision_backend("copilot")
+
+        assert client is not None
+        assert hasattr(client, "_custom_headers")
+        assert client._custom_headers.get("Copilot-Vision-Request") == "true"
+
+
+class TestAuxiliaryPoolAwareness:
+    def test_try_nous_uses_pool_entry(self):
+        class _Entry:
+            access_token = "pooled-access-token"
+            agent_key = "pooled-agent-key"
+            inference_base_url = "https://inference.pool.example/v1"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             from agent.auxiliary_client import _try_nous
