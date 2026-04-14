@@ -379,6 +379,17 @@ def _reset_module_state():
     except Exception:
         pass
 
+    # Tests should not inherit the agent's current gateway/messaging surface.
+    # Individual tests that need gateway behavior set these explicitly.
+    os.environ.pop("HERMES_SESSION_PLATFORM", None)
+    os.environ.pop("HERMES_SESSION_CHAT_ID", None)
+    os.environ.pop("HERMES_SESSION_CHAT_NAME", None)
+    os.environ.pop("HERMES_GATEWAY_SESSION", None)
+    # Avoid making real calls during tests if these keys are set in env files.
+    os.environ.pop("OPENROUTER_API_KEY", None)
+    os.environ.pop("OPENAI_BASE_URL", None)
+    os.environ.pop("OPENAI_API_KEY", None)
+
     yield
 
 

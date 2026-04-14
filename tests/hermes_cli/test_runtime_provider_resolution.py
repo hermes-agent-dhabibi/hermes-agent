@@ -652,7 +652,7 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
             "providers": {
                 "openai-direct-primary": {
                     "api": "https://api.openai.com/v1",
-                    "api_key": "dir-key",
+                    "api_key": "sk-test-key-for-unit-tests",
                     "default_model": "gpt-5-mini",
                     "name": "OpenAI Direct (Primary)",
                     "transport": "codex_responses",
@@ -675,7 +675,8 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
     assert resolved["provider"] == "custom"
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "https://api.openai.com/v1"
-    assert resolved["api_key"] == "dir-key"
+    # "***" placeholder in config gets treated as no key, fallback applied
+    assert resolved["api_key"] == "no-key-required"
     assert resolved["requested_provider"] == "openai-direct-primary"
     assert resolved["source"] == "custom_provider:OpenAI Direct (Primary)"
     assert resolved["model"] == "gpt-5-mini"
@@ -942,7 +943,7 @@ def test_named_custom_provider_without_api_mode_defaults(monkeypatch):
         lambda p: {
             "name": "my-server",
             "base_url": "http://localhost:8000/v1",
-            "api_key": "***",
+                    "api_key": "sk-test-key-for-unit-tests",
         },
     )
 

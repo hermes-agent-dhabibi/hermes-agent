@@ -408,8 +408,8 @@ class TestValueTypes:
         # privacy.redact_pii defaults to False
         assert cfg.get("privacy", {}).get("redact_pii") is False
 
-    def test_none_value(self, tmp_path):
-        """compression.summary_base_url defaults to None."""
+    def test_empty_string_value(self, tmp_path):
+        """auxiliary.compression.base_url defaults to empty string."""
         _write_config(tmp_path, """\
             compression:
               enabled: true
@@ -418,7 +418,8 @@ class TestValueTypes:
         sync_config()
 
         cfg = _read_config(tmp_path)
-        assert cfg["compression"]["summary_base_url"] is None
+        # auxiliary.compression.base_url defaults to empty string
+        assert cfg.get("auxiliary", {}).get("compression", {}).get("base_url") == ""
 
 
 class TestIdempotent:
