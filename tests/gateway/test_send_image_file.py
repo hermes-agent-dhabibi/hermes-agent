@@ -58,6 +58,112 @@ class TestExtractMediaImages:
         assert "/screenshot.png" in paths
 
 
+class TestExtractMediaArbitraryFiles:
+    """Test that MEDIA: tags with non-media extensions are correctly extracted."""
+
+    def test_zip_file_extracted(self):
+        content = "Here is the archive:\nMEDIA:/tmp/export.zip"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/export.zip"
+        assert "MEDIA:" not in cleaned
+
+    def test_tar_gz_extracted(self):
+        content = "MEDIA:/home/user/backup.tar.gz"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/home/user/backup.tar.gz"
+
+    def test_pdf_extracted(self):
+        content = "MEDIA:/tmp/report.pdf"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/report.pdf"
+
+    def test_python_file_extracted(self):
+        content = "MEDIA:/srv/project/script.py"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/srv/project/script.py"
+
+    def test_json_file_extracted(self):
+        content = "MEDIA:~/data/config.json"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "~/data/config.json"
+
+    def test_csv_extracted(self):
+        content = "MEDIA:/tmp/transactions.csv"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/transactions.csv"
+
+    def test_yaml_extracted(self):
+        content = "MEDIA:/etc/app/config.yaml"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/etc/app/config.yaml"
+
+    def test_log_file_extracted(self):
+        content = "MEDIA:/var/log/app.log"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/var/log/app.log"
+
+    def test_txt_file_extracted(self):
+        content = "MEDIA:/tmp/notes.txt"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/notes.txt"
+
+    def test_md_file_extracted(self):
+        content = "MEDIA:~/docs/README.md"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "~/docs/README.md"
+
+    def test_html_file_extracted(self):
+        content = "MEDIA:/tmp/output.html"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/output.html"
+
+    def test_mixed_media_and_documents(self):
+        """Image, audio, and document files all extracted together."""
+        content = "MEDIA:/tmp/screenshot.png\nMEDIA:/tmp/voice.ogg\nMEDIA:/tmp/report.pdf\nMEDIA:/tmp/data.csv"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 4
+        paths = [m[0] for m in media]
+        assert "/tmp/screenshot.png" in paths
+        assert "/tmp/voice.ogg" in paths
+        assert "/tmp/report.pdf" in paths
+        assert "/tmp/data.csv" in paths
+
+    def test_placeholders_still_rejected(self):
+        """Ensure broadened regex doesn't match non-path placeholders."""
+        non_path_cases = [
+            "MEDIA:<path>",
+            "MEDIA:placeholder",
+            "MEDIA:foo.zip",       # relative, no /
+            "MEDIA:bar",           # no extension
+        ]
+        for content in non_path_cases:
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert media == [], f"Should not match: {content!r}"
+
+    def test_quoted_document_path(self):
+        content = "MEDIA:'/tmp/my report.pdf'"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/my report.pdf"
+
+    def test_backticked_document_path(self):
+        content = "MEDIA:`/tmp/data.json`"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/data.json"
+
+
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests
 # ---------------------------------------------------------------------------
