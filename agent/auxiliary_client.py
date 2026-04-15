@@ -1582,22 +1582,11 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
     provider = _normalize_vision_provider(provider)
     if provider == "copilot":
-        client, model = resolve_provider_client("copilot", model="gpt-4.1", is_vision=True)
-        if client is not None:
-            # Ensure the Copilot-Vision-Request header is set so the API
-            # routes through vision-capable infrastructure.
-            try:
-                from hermes_cli.copilot_auth import copilot_request_headers
-
-                vision_headers = copilot_request_headers(
-                    is_agent_turn=True, is_vision=True
-                )
-                if hasattr(client, "_custom_headers"):
-                    client._custom_headers.update(vision_headers)
-                elif hasattr(client, "_default_headers"):
-                    client._default_headers.update(vision_headers)
-            except ImportError:
-                pass
+        # Default Copilot vision to gpt-5-mini. For chat-completions models,
+        # resolve_provider_client(..., is_vision=True) still applies the
+        # Copilot vision headers. GPT-5 responses-path models do not need the
+        # old post-construction header injection.
+        client, model = resolve_provider_client("copilot", model="gpt-5-mini", is_vision=True)
         return client, model
     if provider == "openrouter":
         return _try_openrouter()
