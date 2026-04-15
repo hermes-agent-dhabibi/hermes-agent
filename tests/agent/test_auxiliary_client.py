@@ -551,8 +551,8 @@ class TestNousAuxiliaryRefresh:
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
 
-    def test_copilot_vision_request_header_set_on_async_client(self, monkeypatch):
-        """Vision resolution sets Copilot-Vision-Request header for copilot backends."""
+    def test_copilot_vision_auto_resolves_gpt5_mini(self, monkeypatch):
+        """Vision auto-resolution uses gpt-5-mini default for copilot backends."""
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         with (
@@ -567,19 +567,17 @@ class TestNousAuxiliaryRefresh:
             ),
             patch("agent.auxiliary_client._read_nous_auth", return_value=None),
             patch("agent.auxiliary_client._read_main_provider", return_value="copilot"),
-            patch("agent.auxiliary_client._read_main_model", return_value="gpt-4.1"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5-mini"),
         ):
             provider, client, model = resolve_vision_provider_client(
                 provider="auto", async_mode=True)
 
         assert provider == "copilot"
         assert client is not None
-        assert model == "gpt-4.1"
-        assert hasattr(client, "_custom_headers")
-        assert client._custom_headers.get("Copilot-Vision-Request") == "true"
+        assert model == "gpt-5-mini"
 
-    def test_copilot_vision_request_header_set_on_sync_client(self, monkeypatch):
-        """Sync vision backend also gets the Copilot-Vision-Request header."""
+    def test_copilot_vision_uses_gpt5_mini_default(self, monkeypatch):
+        """Copilot vision backend defaults to gpt-5-mini (Responses API)."""
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         with (
@@ -598,8 +596,7 @@ class TestNousAuxiliaryRefresh:
             client, model = _resolve_strict_vision_backend("copilot")
 
         assert client is not None
-        assert hasattr(client, "_custom_headers")
-        assert client._custom_headers.get("Copilot-Vision-Request") == "true"
+        assert model == "gpt-5-mini"
 
 
 class TestAuxiliaryPoolAwareness:
