@@ -896,9 +896,8 @@ class AIAgent:
         # (api.openai.com) since all newer tool-calling models prefer
         # Responses there. ACP runtimes are excluded: CopilotACPClient
         # handles its own routing and does not implement the Responses API
-        # surface.
-        # When api_mode was explicitly provided, respect it — the user
-        # knows what their endpoint supports (#10473).
+        # surface. When api_mode was explicitly provided, respect it — the
+        # user knows what their endpoint supports (#10473).
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
