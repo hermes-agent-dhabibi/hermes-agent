@@ -10668,7 +10668,7 @@ class AIAgent:
         # Plugins can use this for cleanup, flushing buffers, etc.
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
+            _end_results = _invoke_hook(
                 "on_session_end",
                 session_id=self.session_id,
                 completed=completed,
@@ -10679,6 +10679,16 @@ class AIAgent:
                 thread_id=getattr(self, "thread_id", None),
                 user_id=getattr(self, "_user_id", None),
             )
+            # Check for continuation directive from plugins
+            for _end_r in (_end_results or []):
+                if isinstance(_end_r, dict) and _end_r.get("action") == "continue":
+                    _cont_prompt = _end_r.get("prompt", "")
+                    if isinstance(_cont_prompt, str) and _cont_prompt.strip():
+                        result["continuation"] = {
+                            "prompt": _cont_prompt.strip(),
+                            "max_depth": _end_r.get("max_depth", 5),
+                        }
+                        break
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)
 
