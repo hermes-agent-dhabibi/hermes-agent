@@ -4420,8 +4420,6 @@ def cmd_update(args):
             sys.exit(1)
 
 
-<<<<<<< HEAD
-=======
 def cmd_update_custom(args):
     """Update from upstream via fork's custom branch.
 
@@ -6654,9 +6652,6 @@ Examples:
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
     )
     update_parser.set_defaults(func=cmd_update)
-<<<<<<< HEAD
-    
-=======
 
     # =========================================================================
     # update-custom command (fork workflow: upstream → main → rebase custom)
@@ -6679,7 +6674,6 @@ Examples:
     )
     update_skills_parser.set_defaults(func=cmd_update_skills)
 
->>>>>>> 040c22de (feat: add `hermes update-skills` — pull only built-in skills from upstream)
     # =========================================================================
     # uninstall command
     # =========================================================================

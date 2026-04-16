@@ -134,3 +134,8 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration' -n auto"
+log_level = "ERROR"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
