@@ -7029,6 +7029,18 @@ class GatewayRunner:
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
+
+            # Plugin continuation loop — plugins can request follow-up turns
+            # by returning {"action": "continue", "prompt": "..."} from on_session_end.
+            _cont = result.pop("continuation", None)
+            _cont_depth = 0
+            while _cont and _cont_depth < _cont.get("max_depth", 5):
+                _cont_depth += 1
+                _cont_msg = _cont["prompt"]
+                agent_history = result.get("messages", [])
+                result = agent.run_conversation(_cont_msg, conversation_history=agent_history, task_id=session_id)
+                _cont = result.pop("continuation", None)
+
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done
