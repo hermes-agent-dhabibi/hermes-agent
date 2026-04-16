@@ -111,6 +111,53 @@ FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env(
     "integer",
 )
 
+# ---------------------------------------------------------------------------
+# Auto-background detection: regex patterns for commands that should never
+# run in the foreground because they block indefinitely (servers, watchers,
+# tunnels, etc.).  When matched, the terminal tool silently upgrades the
+# call to background=True + notify_on_complete=True.
+# ---------------------------------------------------------------------------
+_LONG_RUNNING_PATTERNS = [
+    # Explicit backgrounding / disown
+    r'\bnohup\b',
+    r'&\s*disown\b',
+    # Python / Node / Ruby / Java server scripts
+    r'\bpython[23]?\s+\S*server',
+    r'\bnode\s+\S*server',
+    r'\bruby\s+\S*server',
+    r'\bjava\s+.*-jar\b',
+    # npm / yarn / pnpm / bun dev/start scripts
+    r'\b(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:start|dev)\b',
+    # Python web servers / app runners
+    r'\b(?:uvicorn|gunicorn|hypercorn|daphne|waitress-serve)\b',
+    r'\bflask\s+run\b',
+    r'\bstreamlit\s+run\b',
+    r'\bcelery\s+worker\b',
+    r'\bmanage\.py\s+runserver\b',
+    # JS/TS dev servers
+    r'\bnext\s+dev\b',
+    r'\b(?:vite|webpack-dev-server|react-scripts\s+start)\b',
+    r'\bgatsby\s+develop\b',
+    r'\bremix\s+dev\b',
+    # Docker compose up (without -d)
+    r'\bdocker\s+compose\s+up\b(?!.*\s-d\b)',
+    r'\bdocker-compose\s+up\b(?!.*\s-d\b)',
+    # Tailing / watching
+    r'\btail\s+-[fF]\b',
+    r'\bjournalctl\s+.*-[fF]',
+    r'\bwatch\s+',
+    # Tunnels
+    r'\b(?:ngrok|cloudflared|bore)\b',
+    # Generic long-lived listeners
+    r'\b(?:caddy|nginx|httpd|apache2)\s+(?:run|start)\b',
+]
+_LONG_RUNNING_RE = re.compile('|'.join(_LONG_RUNNING_PATTERNS), re.IGNORECASE)
+
+
+def _should_auto_background(command: str) -> bool:
+    """Return True if the command matches known long-running patterns."""
+    return bool(_LONG_RUNNING_RE.search(command))
+
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
     "TERMINAL_DISK_WARNING_GB",
@@ -1664,6 +1711,27 @@ def terminal_tool(
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
+        # Auto-background detection: upgrade known long-running commands
+        # to background mode so they don't hang the agent thread.
+        auto_bg_note = None
+        if not background and _should_auto_background(command):
+            # Check config toggle (default: enabled)
+            auto_bg_enabled = True
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _cfg = _load_cfg()
+                auto_bg_enabled = _cfg.get("terminal", {}).get("auto_background", True)
+            except Exception:
+                pass  # default to enabled if config unavailable
+            if auto_bg_enabled:
+                background = True
+                notify_on_complete = True
+                auto_bg_note = (
+                    "⚡ Auto-backgrounded: this command matches a known long-running "
+                    "pattern. Set terminal.auto_background: false in config.yaml to disable."
+                )
+                logger.info("Auto-background triggered for command: %s", _safe_command_preview(command))
+
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
         if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
@@ -1879,6 +1947,8 @@ def terminal_tool(
                 }
                 if approval_note:
                     result_data["approval"] = approval_note
+                if auto_bg_note:
+                    result_data["auto_background"] = auto_bg_note
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 

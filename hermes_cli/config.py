@@ -797,6 +797,10 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # Auto-background detection: automatically force background=True for
+        # commands that match known long-running patterns (servers, dev servers,
+        # watchers, tunnels, etc.) to prevent hanging the agent thread.
+        "auto_background": True,
     },
 
     "web": {
