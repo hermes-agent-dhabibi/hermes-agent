@@ -754,15 +754,22 @@ class DiscordAdapter(BasePlatformAdapter):
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
             return
-        try:
-            synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
-            logger.info("[%s] Synced %d slash command(s)", self.name, len(synced))
-        except asyncio.TimeoutError:
-            logger.warning("[%s] Slash command sync timed out after 30s", self.name)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+        for attempt in range(1, 4):
+            try:
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=60)
+                logger.info("[%s] Synced %d slash command(s)", self.name, len(synced))
+                break
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Slash command sync timed out (attempt %d/3)", self.name, attempt
+                )
+                if attempt < 3:
+                    await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+                break
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
