@@ -10585,6 +10585,9 @@ class AIAgent:
                         session_id=self.session_id,
                         model=self.model,
                         platform=getattr(self, "platform", None) or "",
+                        chat_id=getattr(self, "chat_id", None),
+                        thread_id=getattr(self, "thread_id", None),
+                        user_id=getattr(self, "_user_id", None),
                     )
                 except Exception as exc:
                     logger.warning("on_session_start hook failed: %s", exc)
@@ -10690,6 +10693,8 @@ class AIAgent:
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
+                chat_id=getattr(self, "chat_id", None),
+                thread_id=getattr(self, "thread_id", None),
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:
@@ -13782,6 +13787,9 @@ class AIAgent:
                     conversation_history=list(messages),
                     model=self.model,
                     platform=getattr(self, "platform", None) or "",
+                    sender_id=getattr(self, "_user_id", None) or "",
+                    chat_id=getattr(self, "chat_id", None),
+                    thread_id=getattr(self, "thread_id", None),
                 )
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
@@ -13886,6 +13894,9 @@ class AIAgent:
                 interrupted=interrupted,
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
+                chat_id=getattr(self, "chat_id", None),
+                thread_id=getattr(self, "thread_id", None),
+                user_id=getattr(self, "_user_id", None),
             )
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)

@@ -2426,6 +2426,9 @@ class GatewayRunner:
                     "on_session_finalize",
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
+                    chat_id=getattr(agent, "chat_id", None),
+                    thread_id=getattr(agent, "thread_id", None),
+                    user_id=getattr(agent, "_user_id", None),
                 )
             except Exception:
                 pass
@@ -6845,7 +6848,10 @@ class GatewayRunner:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _old_sid = old_entry.session_id if old_entry else None
             _invoke_hook("on_session_finalize", session_id=_old_sid,
-                         platform=source.platform.value if source.platform else "")
+                         platform=source.platform.value if source.platform else "",
+                         chat_id=source.chat_id,
+                         thread_id=source.thread_id,
+                         user_id=source.user_id)
         except Exception:
             pass
 
@@ -6881,7 +6887,10 @@ class GatewayRunner:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _new_sid = new_entry.session_id if new_entry else None
             _invoke_hook("on_session_reset", session_id=_new_sid,
-                         platform=source.platform.value if source.platform else "")
+                         platform=source.platform.value if source.platform else "",
+                         chat_id=source.chat_id,
+                         thread_id=source.thread_id,
+                         user_id=source.user_id)
         except Exception:
             pass
 
@@ -12764,6 +12773,8 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    chat_id=source.chat_id,
+                    thread_id=source.thread_id,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
