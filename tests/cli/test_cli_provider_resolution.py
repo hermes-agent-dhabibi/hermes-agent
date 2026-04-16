@@ -531,7 +531,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
 
     # After the probe detects a single model ("llm"), the flow asks
     # "Use this model? [Y/n]:" — confirm with Enter, then context length,
-    # then display name.
+    # then display name. The local /v1 hint may also be prompted before that.
     answers = iter(["http://localhost:8000", "local-key", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))

@@ -86,7 +86,6 @@ async def test_compress_command_reports_noop_without_success_banner():
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
-
 @pytest.mark.asyncio
 async def test_compress_command_explains_when_token_estimate_rises():
     history = _make_history()
