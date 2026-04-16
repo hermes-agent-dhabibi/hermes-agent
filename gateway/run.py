@@ -6837,13 +6837,16 @@ class GatewayRunner:
                     user_id=source.user_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
-                    chat_id=source.chat_id,
-                    thread_id=source.thread_id,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            # Set routing context as attributes on every turn (covers both
+            # fresh and cached agents — source may differ across turns).
+            agent.chat_id = source.chat_id
+            agent.thread_id = source.thread_id
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
