@@ -8425,10 +8425,6 @@ class GatewayRunner:
         _hooks_ref = self.hooks
 
         def _step_callback_sync(iteration: int, prev_tools: list) -> None:
-            # Signal a new tool-progress group so each iteration's tools
-            # get their own editable message (chronological with thinking).
-            if progress_queue:
-                progress_queue.put("__new_group__")
             try:
                 # prev_tools may be list[str] or list[dict] with "name"/"result"
                 # keys.  Normalise to keep "tool_names" backward-compatible for
@@ -8593,19 +8589,27 @@ class GatewayRunner:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                # Thinking text appeared — next tool batch needs a fresh message
+                # so tools don't edit into a message that precedes this thinking.
+                if progress_queue:
+                    progress_queue.put("__new_group__")
+
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
-                        _stream_consumer.on_commentary(text)
+                        # Format as block quote for visual distinction from replies
+                        quoted = "\n".join(f"> {l}" for l in text.splitlines())
+                        _stream_consumer.on_commentary(f"💭\n{quoted}")
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
                 try:
+                    quoted = "\n".join(f"> {l}" for l in text.splitlines())
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
-                            text,
+                            f"💭\n{quoted}",
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
