@@ -410,6 +410,7 @@ def _skill_autocomplete_choices(current: str) -> list:
     """Return up to 25 autocomplete choices for the /skill name parameter.
 
     Filters skills by substring match on name, category, and description.
+    Prioritizes name-prefix matches, then name-substring, then other fields.
     Returns ``app_commands.Choice`` objects with human-readable labels.
     """
     from agent.skill_commands import get_skill_commands
@@ -419,19 +420,31 @@ def _skill_autocomplete_choices(current: str) -> list:
         return []
 
     query = current.strip().lower()
-    choices = []
+
+    # Bucket into tiers: prefix match on slug > substring on slug > match on category/description
+    prefix_matches = []
+    name_matches = []
+    other_matches = []
 
     for cmd_key, info in sorted(skills.items()):
         slug = cmd_key.lstrip("/")
         category = info.get("category", "")
         description = info.get("description", "")
 
-        # Match against name, category, and description
-        if query and not any(
-            query in field.lower()
-            for field in (slug, category, description)
-        ):
-            continue
+        if not query:
+            prefix_matches.append((cmd_key, info))
+        elif slug.startswith(query):
+            prefix_matches.append((cmd_key, info))
+        elif query in slug:
+            name_matches.append((cmd_key, info))
+        elif query in category.lower() or query in description.lower():
+            other_matches.append((cmd_key, info))
+
+    choices = []
+    for cmd_key, info in prefix_matches + name_matches + other_matches:
+        slug = cmd_key.lstrip("/")
+        category = info.get("category", "")
+        description = info.get("description", "")
 
         # Build display label: "category / slug — description" (max 100 chars)
         if category:
