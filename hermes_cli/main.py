@@ -9121,8 +9121,9 @@ Examples:
                     "No branch switching, no code checkout, no dependency changes."
     )
     update_skills_parser.set_defaults(func=cmd_update_skills)
+
     # =========================================================================
-    # uninstall command
+
     # =========================================================================
     uninstall_parser = subparsers.add_parser(
         "uninstall",
