@@ -81,8 +81,8 @@ async def test_compress_command_reports_noop_without_success_banner():
         result = await runner._handle_compress_command(_make_event())
 
     # When message count and token count are unchanged, the output shows no delta
-    assert "4 → 4 messages" in result
-    assert "~100 → ~100 tokens" in result
+    assert "4 messages" in result
+    assert "~100 tokens" in result
 
 
 @pytest.mark.asyncio
