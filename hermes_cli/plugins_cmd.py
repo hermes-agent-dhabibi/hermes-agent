@@ -249,6 +249,80 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
     console.print()
 
 
+def _auto_register_toolset(manifest: dict, console) -> None:
+    """Add the plugin's toolset to all platform_toolsets entries in config.yaml.
+
+    If plugin.yaml declares ``toolset: my_toolset``, this ensures every
+    platform listed in ``platform_toolsets`` includes it.  Skips platforms
+    that already have it.  Does nothing if no toolset is declared or if
+    platform_toolsets is not configured.
+    """
+    toolset_name = manifest.get("toolset")
+    if not toolset_name or not isinstance(toolset_name, str):
+        return
+
+    try:
+        from hermes_cli.config import load_config, save_config
+        config = load_config()
+    except Exception:
+        return
+
+    platform_toolsets = config.get("platform_toolsets")
+    if not isinstance(platform_toolsets, dict):
+        return
+
+    added_to = []
+    for platform, toolsets in platform_toolsets.items():
+        if not isinstance(toolsets, list):
+            continue
+        if toolset_name not in toolsets:
+            # Insert alphabetically
+            toolsets.append(toolset_name)
+            toolsets.sort()
+            added_to.append(platform)
+
+    if added_to:
+        save_config(config)
+        platforms_str = ", ".join(added_to)
+        console.print(
+            f"[green]✓[/green] Added toolset [bold]{toolset_name}[/bold] "
+            f"to platform_toolsets: {platforms_str}"
+        )
+
+
+def _auto_unregister_toolset(manifest: dict, console) -> None:
+    """Remove the plugin's toolset from all platform_toolsets entries in config.yaml."""
+    toolset_name = manifest.get("toolset")
+    if not toolset_name or not isinstance(toolset_name, str):
+        return
+
+    try:
+        from hermes_cli.config import load_config, save_config
+        config = load_config()
+    except Exception:
+        return
+
+    platform_toolsets = config.get("platform_toolsets")
+    if not isinstance(platform_toolsets, dict):
+        return
+
+    removed_from = []
+    for platform, toolsets in platform_toolsets.items():
+        if not isinstance(toolsets, list):
+            continue
+        if toolset_name in toolsets:
+            toolsets.remove(toolset_name)
+            removed_from.append(platform)
+
+    if removed_from:
+        save_config(config)
+        platforms_str = ", ".join(removed_from)
+        console.print(
+            f"[dim]Removed toolset '{toolset_name}' "
+            f"from platform_toolsets: {platforms_str}[/dim]"
+        )
+
+
 def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     """Show after-install.md if it exists, otherwise a default message."""
     from rich.console import Console
@@ -440,6 +514,10 @@ def cmd_install(
             f"or __init__.py. It may not be a valid Hermes plugin.",
         )
 
+    # Auto-register plugin toolset in platform_toolsets if declared
+    _auto_register_toolset(installed_manifest, console)
+
+    # Prompt for required environment variables before showing after-install docs
     _prompt_plugin_env_vars(installed_manifest, console)
 
     _display_after_install(target, identifier)
@@ -531,7 +609,11 @@ def cmd_remove(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    # Read manifest before removing so we can clean up the toolset
+    manifest = _read_manifest(target)
+
     shutil.rmtree(target)
+    _auto_unregister_toolset(manifest, console)
     _display_removed(name, plugins_dir)
 
 
