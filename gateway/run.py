@@ -4009,7 +4009,8 @@ class GatewayRunner:
                         display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                    quoted = "\n".join(f"> {l}" for l in display_reasoning.splitlines())
+                    response = f"💭 **Reasoning:**\n{quoted}\n\n{response}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -8314,6 +8315,12 @@ class GatewayRunner:
                 try:
                     raw = progress_queue.get_nowait()
 
+                    # Handle new-group sentinel: reset so next tools get a fresh message
+                    if raw == "__new_group__":
+                        progress_lines = []
+                        progress_msg_id = None
+                        continue
+
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
@@ -8385,6 +8392,8 @@ class GatewayRunner:
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            elif raw == "__new_group__":
+                                pass  # Skip sentinels during drain
                             else:
                                 progress_lines.append(raw)
                         except Exception:
@@ -8416,6 +8425,10 @@ class GatewayRunner:
         _hooks_ref = self.hooks
 
         def _step_callback_sync(iteration: int, prev_tools: list) -> None:
+            # Signal a new tool-progress group so each iteration's tools
+            # get their own editable message (chronological with thinking).
+            if progress_queue:
+                progress_queue.put("__new_group__")
             try:
                 # prev_tools may be list[str] or list[dict] with "name"/"result"
                 # keys.  Normalise to keep "tool_names" backward-compatible for
