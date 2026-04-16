@@ -101,10 +101,7 @@ class TestReadCodexAccessToken:
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-<<<<<<< HEAD
-=======
         # Mock pool check to ensure no pool entries interfere
->>>>>>> 63da34ce (fix(tests): resolve stale test imports and missing module references)
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _read_codex_access_token()
         assert result is None
@@ -163,10 +160,7 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-<<<<<<< HEAD
-=======
         # Mock pool check to ensure no pool entries interfere
->>>>>>> 63da34ce (fix(tests): resolve stale test imports and missing module references)
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _read_codex_access_token()
         assert result is None, "Expired JWT should return None"
