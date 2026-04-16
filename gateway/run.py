@@ -9766,19 +9766,26 @@ class GatewayRunner:
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
+                # Thinking text appeared — next tool batch needs a fresh message
+                # so tools don't edit into a message that precedes this thinking.
+                if progress_queue:
+                    progress_queue.put("__new_group__")
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
-                        _stream_consumer.on_commentary(text)
+                        # Format as block quote for visual distinction from replies
+                        quoted = "\n".join(f"> {l}" for l in text.splitlines())
+                        _stream_consumer.on_commentary(f"💭\n{quoted}")
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
                 try:
+                    quoted = "\n".join(f"> {l}" for l in text.splitlines())
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
-                            text,
+                            f"💭\n{quoted}",
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
