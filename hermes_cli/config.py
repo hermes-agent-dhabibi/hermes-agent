@@ -5849,6 +5849,7 @@ def set_config_value(key: str, value: str):
         "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
         "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+        "terminal.auto_background": "TERMINAL_AUTO_BACKGROUND",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

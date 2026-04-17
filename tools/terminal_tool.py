@@ -125,7 +125,6 @@ _LONG_RUNNING_PATTERNS = [
     r'\bpython[23]?\s+\S*server',
     r'\bnode\s+\S*server',
     r'\bruby\s+\S*server',
-    r'\bjava\s+.*-jar\b',
     # npm / yarn / pnpm / bun dev/start scripts
     r'\b(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:start|dev)\b',
     # Python web servers / app runners
@@ -136,7 +135,8 @@ _LONG_RUNNING_PATTERNS = [
     r'\bmanage\.py\s+runserver\b',
     # JS/TS dev servers
     r'\bnext\s+dev\b',
-    r'\b(?:vite|webpack-dev-server|react-scripts\s+start)\b',
+    r'\bvite\b(?:\s+dev)?(?!\s+(?:build|preview|optimize|inspect))',
+    r'\b(?:webpack-dev-server|react-scripts\s+start)\b',
     r'\bgatsby\s+develop\b',
     r'\bremix\s+dev\b',
     # Docker compose up (without -d)
@@ -145,7 +145,7 @@ _LONG_RUNNING_PATTERNS = [
     # Tailing / watching
     r'\btail\s+-[fF]\b',
     r'\bjournalctl\s+.*-[fF]',
-    r'\bwatch\s+',
+    r'(?:^|[;&|]\s*)watch\s+',
     # Tunnels
     r'\b(?:ngrok|cloudflared|bore)\b',
     # Generic long-lived listeners
@@ -1893,14 +1893,9 @@ def terminal_tool(
         # to background mode so they don't hang the agent thread.
         auto_bg_note = None
         if not background and _should_auto_background(command):
-            # Check config toggle (default: enabled)
-            auto_bg_enabled = True
-            try:
-                from hermes_cli.config import load_config as _load_cfg
-                _cfg = _load_cfg()
-                auto_bg_enabled = _cfg.get("terminal", {}).get("auto_background", True)
-            except Exception:
-                pass  # default to enabled if config unavailable
+            # Check config toggle via env var (set by CLI/gateway from config.yaml).
+            # Avoids re-parsing config.yaml on every call.
+            auto_bg_enabled = os.getenv("TERMINAL_AUTO_BACKGROUND", "true").lower() not in ("false", "0", "no")
             if auto_bg_enabled:
                 background = True
                 notify_on_complete = True
