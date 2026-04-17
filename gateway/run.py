@@ -8901,11 +8901,20 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _cc_before = agent.context_compressor.compression_count if agent.context_compressor else 0
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
+            # Notify on context compaction
+            _cc_after = agent.context_compressor.compression_count if agent.context_compressor else 0
+            if _cc_after > _cc_before and _status_adapter:
+                _post_tokens = agent.context_compressor.last_prompt_tokens
+                _threshold = agent.context_compressor.threshold_tokens
+                _pct = int((_post_tokens / _threshold) * 100) if _threshold else 0
+                _msg = f"✅ Context compacted (#{_cc_after}) — now at ~{_pct}% capacity."
+                _status_callback_sync("compaction_complete", _msg)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done
