@@ -133,6 +133,8 @@ _LONG_RUNNING_PATTERNS = [
     r'\bstreamlit\s+run\b',
     r'\bcelery\s+worker\b',
     r'\bmanage\.py\s+runserver\b',
+    # npx-launched servers (serve, http-server, live-server, etc.)
+    r'\bnpx\s+(?:serve|http-server|live-server|ws|lite-server)\b',
     # JS/TS dev servers
     r'\bnext\s+dev\b',
     r'\bvite\b(?:\s+dev)?(?!\s+(?:build|preview|optimize|inspect))',
