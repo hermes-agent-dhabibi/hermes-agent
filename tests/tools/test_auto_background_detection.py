@@ -56,6 +56,11 @@ class TestShouldAutoBackground:
         "nohup python app.py",
         "caddy run",
         "nginx start",
+        # npx-launched servers
+        "npx serve dist -l 4321",
+        "npx http-server . -p 8080",
+        "npx live-server",
+        "npx serve dist -l 4321 --no-clipboard",
     ])
     def test_matches_long_running(self, cmd):
         assert self.fn(cmd), f"Expected match for: {cmd}"
