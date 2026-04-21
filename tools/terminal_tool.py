@@ -112,59 +112,282 @@ FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env(
 )
 
 # ---------------------------------------------------------------------------
-# Auto-background detection: regex patterns for commands that should never
-# run in the foreground because they block indefinitely (servers, watchers,
-# tunnels, etc.).  When matched, the terminal tool silently upgrades the
+# Auto-background detection: identify commands that should never run in the
+# foreground because they block indefinitely (servers, watchers, tunnels,
+# REPLs, TUIs, etc.).  When matched, the terminal tool silently upgrades the
 # call to background=True + notify_on_complete=True.
+#
+# Detection pipeline (run on every command before execution):
+#   1. Strip quoted strings → eliminates false positives where a long-running
+#      command name appears inside `git commit -m "..."`, `echo "..."`, etc.
+#   2. Unwrap shell wrappers iteratively:
+#        sudo / env / time / nice / ionice / taskset / chrt / unbuffer /
+#        stdbuf / VAR=val / bash -c '...' / sh -c '...' / ( ... )
+#      so detection sees the actual command being executed.
+#   3. Check for shell-level backgrounding: a bare `&` (not `&&`, `&>`)
+#      anywhere in the command means the user is detaching a process.  The
+#      parent shell still inherits open file descriptors, so the terminal
+#      tool will hang waiting for them.  Force background=True.
+#   4. Match against known long-running command patterns (regex below).
 # ---------------------------------------------------------------------------
+
+# Strip single- and double-quoted strings to a placeholder.  Handles escaped
+# quotes inside strings.  Operates conservatively — leaves backtick/$()
+# subshells alone (rare, and inner content there is usually fine to inspect).
+_QUOTED_STRING_RE = re.compile(r"'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\"")
+
+
+def _strip_quoted(cmd: str) -> str:
+    return _QUOTED_STRING_RE.sub('__Q__', cmd)
+
+
+# Wrapper prefixes that don't change what command is "really" being executed.
+_WRAPPER_PREFIX_RE = re.compile(
+    r'^\s*(?:'
+    r'sudo(?:\s+-[EHnSPbi]+)*(?:\s+-u\s+\S+)?|'
+    r'time|'
+    r'nice(?:\s+-n\s+-?\d+)?|'
+    r'ionice(?:\s+-c\s+\d+)?(?:\s+-n\s+\d+)?|'
+    r'taskset(?:\s+-c\s+\S+)?|'
+    r'chrt\s+\S+\s+\d+|'
+    r'unbuffer|'
+    r'stdbuf(?:\s+-[oei][LB0])+|'
+    r'env(?:\s+-i)?(?:\s+\w+=\S*)*|'
+    r'\w+=\S*'  # bare VAR=value prefix
+    r')(?=\s)'
+)
+
+
+def _strip_wrappers(cmd: str) -> str:
+    prev = None
+    while prev != cmd:
+        prev = cmd
+        cmd = _WRAPPER_PREFIX_RE.sub('', cmd, count=1).lstrip()
+    return cmd
+
+
+# `bash -c '...'`, `sh -c "..."` etc. — unwrap to inspect the inner command.
+_SHELL_C_RE = re.compile(r"^\s*(?:bash|sh|zsh|dash|ash)\s+-[a-z]*c\s+(.+)$", re.DOTALL)
+
+
+def _unwrap_shell_c(cmd: str) -> str:
+    m = _SHELL_C_RE.match(cmd)
+    if not m:
+        return cmd
+    inner = m.group(1).strip()
+    if len(inner) >= 2 and inner[0] in ('"', "'") and inner[-1] == inner[0]:
+        inner = inner[1:-1]
+    return inner
+
+
+# `( ... )` subshells.
+_PARENS_WRAP_RE = re.compile(r'^\s*\(\s*(.+?)\s*\)\s*$', re.DOTALL)
+
+
+def _unwrap_parens(cmd: str) -> str:
+    m = _PARENS_WRAP_RE.match(cmd)
+    return m.group(1) if m else cmd
+
+
+def _normalize_command(cmd: str) -> str:
+    """Iteratively strip wrappers (sudo / env / bash -c / parens) to expose
+    the underlying command.  Bounded iteration to prevent pathological loops.
+    """
+    out = cmd
+    for _ in range(4):
+        prev = out
+        out = _unwrap_parens(out)
+        out = _unwrap_shell_c(out)
+        out = _strip_wrappers(out)
+        if out == prev:
+            break
+    return out
+
+
+# Bare `&` (shell backgrounding) — but NOT `&&` (logical AND), `&>` (redirect),
+# or `>&` (fd redirect).
+_BARE_AMPERSAND_RE = re.compile(r'(?<![&>])&(?![&>])')
+
+
 _LONG_RUNNING_PATTERNS = [
-    # Explicit backgrounding / disown
+    # === Explicit backgrounding / detach ===
     r'\bnohup\b',
     r'&\s*disown\b',
-    # Python / Node / Ruby / Java server scripts
-    r'\bpython[23]?\s+\S*server',
-    r'\bnode\s+\S*server',
-    r'\bruby\s+\S*server',
-    # npm / yarn / pnpm / bun dev/start scripts
-    r'\b(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:start|dev)\b',
-    # Python web servers / app runners
-    r'\b(?:uvicorn|gunicorn|hypercorn|daphne|waitress-serve)\b',
+
+    # === npm / yarn / pnpm / bun dev/start/serve/watch ===
+    r'\b(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:start|dev|serve|watch)\b',
+
+    # === Deno ===
+    r'\bdeno\s+task\s+(?:dev|serve|start|watch)\b',
+    r'\bdeno\s+run\b.*\bserver\b',
+
+    # === npx-launched servers, watchers, dev tools ===
+    r'\bnpx?\s+(?:serve|http-server|live-server|ws|lite-server|browser-sync|'
+    r'wrangler\s+dev|netlify\s+dev|firebase\s+(?:serve|emulators:start)|'
+    r'expo\s+start|nodemon|tsc\s+(?:--?w(?:atch)?)|vite|next\s+dev|'
+    r'gatsby\s+develop|remix\s+dev|astro\s+dev)\b',
+    r'\bpnpx\s+(?:serve|http-server|live-server)\b',
+
+    # === Make / just / task / mage targets that launch servers ===
+    r'\bmake\s+(?:serve|server|dev|run|watch|start|develop)\b',
+    r'\bjust\s+(?:serve|server|dev|run|watch|start)\b',
+    r'\btask\s+(?:serve|server|dev|run|watch|start)\b',
+    r'\bmage\s+(?:serve|server|dev|run|watch|start)\b',
+
+    # === Python web servers / app runners ===
+    r'\b(?:uvicorn|gunicorn|hypercorn|daphne|waitress-serve|granian)\b',
     r'\bflask\s+run\b',
     r'\bstreamlit\s+run\b',
-    r'\bcelery\s+worker\b',
+    r'\bcelery\s+(?:-A\s+\S+\s+)?worker\b',
     r'\bmanage\.py\s+runserver\b',
-    # npx-launched servers (serve, http-server, live-server, etc.)
-    r'\bnpx\s+(?:serve|http-server|live-server|ws|lite-server)\b',
-    # Ad-hoc one-line HTTP servers
+    r'\bpython[23]?\s+\S*manage\.py\s+runserver\b',
+
+    # === Ad-hoc one-line HTTP servers (the h2h hang case) ===
     r'\bpython[23]?\s+-m\s+(?:http\.server|SimpleHTTPServer|RangeHTTPServer)\b',
     r'\bphp\s+-S\b',
     r'\bruby\s+-run\s+-e\s+httpd\b',
     r'\bbusybox\s+httpd\b',
-    r'\b(?:miniserve|simple-http-server|devd|browser-sync\s+start)\b',
-    # JS/TS dev servers
+    r'\b(?:miniserve|simple-http-server|devd)\b',
+
+    # === Server scripts by filename heuristic ===
+    r'\bpython[23]?\s+(?:-\S+\s+)*\S*server\S*\.py\b',
+    r'\bnode\s+(?:--\S+\s+)*\S*server\S*\.(?:js|mjs|cjs|ts)\b',
+    r'\bnode\s+--watch\b',
+    r'\bruby\s+\S*server\S*\.rb\b',
+
+    # === Ruby / Rails / Elixir / Phoenix ===
+    r'\b(?:bundle\s+exec\s+)?rails\s+(?:server|s)\b',
+    r'\b(?:bundle\s+exec\s+)?puma\b',
+    r'\b(?:bundle\s+exec\s+)?thin\s+start\b',
+    r'\b(?:bundle\s+exec\s+)?unicorn\b',
+    r'\bjekyll\s+serve\b',
+    r'\bmiddleman\s+server\b',
+    r'\bsinatra\b',
+    r'\bmix\s+phx\.server\b',
+    r'\biex\s+-S\s+mix\b',
+
+    # === Static-site generators in serve mode ===
+    r'\bhugo\s+(?:server|serve)\b',
+    r'\bmkdocs\s+serve\b',
+    r'\bmdbook\s+serve\b',
+    r'\bzola\s+serve\b',
+
+    # === JS/TS dev servers ===
     r'\bnext\s+dev\b',
-    r'\bvite\b(?:\s+dev)?(?!\s+(?:build|preview|optimize|inspect))',
+    r'\bvite\b(?:\s+dev)?(?!\s+(?:build|preview|optimize|inspect|--help))',
     r'\b(?:webpack-dev-server|react-scripts\s+start)\b',
     r'\bgatsby\s+develop\b',
     r'\bremix\s+dev\b',
-    # Docker compose up (without -d)
+    r'\bastro\s+dev\b',
+    r'\b(?:wrangler|netlify|firebase|vercel|amplify)\s+(?:dev|serve|emulators:start)\b',
+    r'\bexpo\s+start\b',
+    r'\bmeteor\b(?:\s+(?:run|debug))?(?!\s+(?:build|deploy|test|create|update|reset))',
+    r'\bsails\s+lift\b',
+
+    # === File watchers / hot reload ===
+    r'\bnodemon\b',
+    r'(?:^|\s)air(?:\s+-c\s+\S+)?\s*$',
+    r'\bair\s+-c\b',
+    r'\bcargo[-\s]watch\b',
+    r'\btsc\s+(?:--?watch|-w)\b',
+    r'\b(?:rollup|webpack|esbuild|parcel|swc)\s+(?:--watch|-w)\b',
+    r'\bwatchman\b',
+    r'\bentr\b',
+
+    # === Process supervisors (foreground modes) ===
+    r'\bpm2\s+(?:start.*--no-daemon|logs)\b',
+    r'\bsupervisord\s+-n\b',
+    r'\bforever\s+\S+\.(?:js|mjs)\b',
+
+    # === Network listeners / sniffers ===
+    r'\bn(?:c|cat)\s+-\w*l\w*\b',
+    r'\bsocat\s+\S*LISTEN\b',
+    r'\b(?:tcpdump|tshark|wireshark)\b',
+    r'\bmitm(?:proxy|dump|web)\b',
+
+    # === SSH port-forwards / tunnels ===
+    r'\bssh\s+(?:[^|;&]*\s)?-[A-Za-z]*[NLR][A-Za-z]*\b',
+    r'\bautossh\b',
+    r'\b(?:ngrok|cloudflared|bore|frp[cs]|localtunnel|lt\s+--port)\b',
+
+    # === Docker / compose ===
     r'\bdocker\s+compose\s+up\b(?!.*\s-d\b)',
     r'\bdocker-compose\s+up\b(?!.*\s-d\b)',
-    # Tailing / watching
-    r'\btail\s+-[fF]\b',
-    r'\bjournalctl\s+.*-[fF]',
+    r'\bdocker\s+(?:compose\s+)?logs\s+-f\b',
+    r'\bdocker\s+logs\s+-f\b',
+    r'\bdocker\s+(?:run|exec)\s+(?:[^|;&]*\s)?-it\b',
+
+    # === Kubernetes ===
+    r'\bkubectl\s+(?:logs\s+-f|port-forward|exec\s+(?:[^|;&]*\s)?-it|attach|proxy)\b',
+    r'\bk9s\b',
+    r'\bstern\b',
+    r'\bminikube\s+(?:dashboard|tunnel)\b',
+    r'\bskaffold\s+(?:dev|debug)\b',
+    r'\btilt\s+up\b',
+
+    # === Tailing / watching ===
+    r'\btail\s+-[a-zA-Z]*[fF][a-zA-Z]*\b',
+    r'\bjournalctl\s+(?:[^|;&]*\s)?-[a-zA-Z]*[fF][a-zA-Z]*\b',
     r'(?:^|[;&|]\s*)watch\s+',
-    # Tunnels
-    r'\b(?:ngrok|cloudflared|bore)\b',
-    # Generic long-lived listeners
-    r'\b(?:caddy|nginx|httpd|apache2)\s+(?:run|start)\b',
+
+    # === Web servers ===
+    r'\b(?:caddy|nginx|httpd|apache2|traefik)\s+(?:run|start)\b',
+    r'\bcaddy\s+(?:reverse-proxy|file-server)\b',
+
+    # === Interactive REPLs (bare or with simple flags) ===
+    r'^(?:python[23]?|ipython|bpython|node|deno\s+repl|irb|pry|ghci|sbcl|'
+    r'clisp|scala|kotlinc|R|julia|lua|tclsh|guile)$',
+
+    # === Database CLIs (typically interactive) ===
+    r'^(?:psql(?:\s+(?:-\S+|\S+))*|mysql(?:\s+(?:-\S+|\S+))*|'
+    r'sqlite3\s+\S+|redis-cli(?:\s+\S+)*|mongosh(?:\s+\S+)*|cqlsh|influx|'
+    r'clickhouse-client)$',
+
+    # === TUIs / system monitors ===
+    r'\b(?:htop|btop|atop|gtop|glances|nmon|iotop|iftop|nethogs|bashtop)\b',
+    r'^top$|\stop$|;\s*top\s*$',
+
+    # === ML / experiment tracking dashboards ===
+    r'\bjupyter(?:-(?:lab|notebook))?\s+(?:lab|notebook|server)\b',
+    r'\bjupyter-(?:lab|notebook)\b',
+    r'\btensorboard\b',
+    r'\bmlflow\s+(?:ui|server)\b',
+    r'\bray\s+(?:start|dashboard)\b',
+    r'\bwandb\s+local\b',
+
+    # === Pagers (block waiting for keypress) ===
+    r'^(?:less|more|most)\s+\S+',
+
+    # === Trace / profile (attach mode) ===
+    r'\b(?:strace|ltrace)\s+(?:[^|;&]*\s)?-p\s+\d+',
+    r'\bperf\s+top\b',
+    r'\bbpftrace\b',
+
+    # === Game / sim long-runners ===
+    r'\b(?:minecraft_server|valheim_server|factorio)\b',
 ]
-_LONG_RUNNING_RE = re.compile('|'.join(_LONG_RUNNING_PATTERNS), re.IGNORECASE)
+_LONG_RUNNING_RE = re.compile('|'.join(f'(?:{p})' for p in _LONG_RUNNING_PATTERNS), re.IGNORECASE)
 
 
 def _should_auto_background(command: str) -> bool:
-    """Return True if the command matches known long-running patterns."""
-    return bool(_LONG_RUNNING_RE.search(command))
+    """Return True if the command matches a known long-running pattern OR uses
+    shell `&` to background a process.  See module docstring for pipeline."""
+    if not command or not command.strip():
+        return False
+    # 1. Normalize wrappers (sudo, env, bash -c, parens) on the raw command so
+    #    we can see the underlying command being executed.
+    normalized = _normalize_command(command)
+    # 2. Strip quoted strings AFTER normalization to avoid matching pattern
+    #    names that appear inside echo/grep/git commit -m "..." arguments.
+    cleaned_norm = _strip_quoted(normalized)
+    cleaned_raw = _strip_quoted(command)
+    # 3. Bare `&` (shell backgrounding) — the h2h hang trap.
+    if _BARE_AMPERSAND_RE.search(cleaned_norm) or _BARE_AMPERSAND_RE.search(cleaned_raw):
+        return True
+    # 4. Pattern match.  Check both normalized and raw because some commands
+    #    use prefixes like `cmd && long_running_cmd` where the raw form
+    #    contains the trigger but normalize won't recurse into chained pieces.
+    return bool(_LONG_RUNNING_RE.search(cleaned_norm) or _LONG_RUNNING_RE.search(cleaned_raw))
 
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
