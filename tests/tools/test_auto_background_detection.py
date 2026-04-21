@@ -61,6 +61,15 @@ class TestShouldAutoBackground:
         "npx http-server . -p 8080",
         "npx live-server",
         "npx serve dist -l 4321 --no-clipboard",
+        # Ad-hoc one-line HTTP servers
+        "python -m http.server 8080",
+        "python3 -m http.server",
+        "cd /tmp/h2h-serve && python3 -m http.server 8765",
+        "python -m SimpleHTTPServer",
+        "php -S localhost:8000",
+        "ruby -run -e httpd . -p 8000",
+        "busybox httpd -f",
+        "miniserve .",
     ])
     def test_matches_long_running(self, cmd):
         assert self.fn(cmd), f"Expected match for: {cmd}"

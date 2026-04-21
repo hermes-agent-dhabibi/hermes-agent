@@ -135,6 +135,12 @@ _LONG_RUNNING_PATTERNS = [
     r'\bmanage\.py\s+runserver\b',
     # npx-launched servers (serve, http-server, live-server, etc.)
     r'\bnpx\s+(?:serve|http-server|live-server|ws|lite-server)\b',
+    # Ad-hoc one-line HTTP servers
+    r'\bpython[23]?\s+-m\s+(?:http\.server|SimpleHTTPServer|RangeHTTPServer)\b',
+    r'\bphp\s+-S\b',
+    r'\bruby\s+-run\s+-e\s+httpd\b',
+    r'\bbusybox\s+httpd\b',
+    r'\b(?:miniserve|simple-http-server|devd|browser-sync\s+start)\b',
     # JS/TS dev servers
     r'\bnext\s+dev\b',
     r'\bvite\b(?:\s+dev)?(?!\s+(?:build|preview|optimize|inspect))',
