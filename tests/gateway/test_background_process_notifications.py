@@ -24,8 +24,9 @@ from gateway.run import GatewayRunner, _parse_session_key
 class _FakeRegistry:
     """Return pre-canned sessions, then None once exhausted."""
 
-    def __init__(self, sessions):
+    def __init__(self, sessions, completion_consumed: bool = False):
         self._sessions = list(sessions)
+        self._completion_consumed_flag = completion_consumed
 
     def get(self, session_id):
         if self._sessions:
@@ -33,7 +34,7 @@ class _FakeRegistry:
         return None
 
     def is_completion_consumed(self, session_id):
-        return False
+        return self._completion_consumed_flag
 
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
@@ -556,3 +557,107 @@ def test_parse_session_key_too_short():
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: notify_on_complete (agent_notify) routing
+# ---------------------------------------------------------------------------
+
+def _agent_watcher_dict(session_id="proc_agent", thread_id=""):
+    """Watcher dict that requested notify_on_complete=True (agent path)."""
+    d = {
+        "session_id": session_id,
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:group:-100:42",
+        "platform": "telegram",
+        "chat_id": "-100",
+        "user_id": "u1",
+        "user_name": "alice",
+        "notify_on_complete": True,
+    }
+    if thread_id:
+        d["thread_id"] = thread_id
+    return d
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_suppresses_user_facing_text_notification(
+    monkeypatch, tmp_path
+):
+    """When notify_on_complete=True, the watcher must inject a synthetic agent
+    event and NEVER also emit the user-facing '[Background process X finished]'
+    text bubble.  This is the regression that was leaking noisy notifications
+    into chats and never triggering the agent's next turn."""
+    import tools.process_registry as pr_module
+    from gateway.session import SessionSource
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo hi",
+        )
+    ]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, completion_consumed=False)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    runner.session_store._entries["agent:main:telegram:group:-100:42"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            thread_id="42",
+            user_id="u1",
+            user_name="alice",
+        )
+    )
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_agent_watcher_dict())
+
+    # Synthetic agent event must be injected exactly once.
+    assert adapter.handle_message.await_count == 1
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.internal is True
+    # User-facing text bubble must NOT be emitted.
+    assert adapter.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_skips_completely_when_already_consumed(
+    monkeypatch, tmp_path
+):
+    """If the agent already consumed the result via wait/poll/log, the
+    watcher must exit silently — no agent injection, no user bubble."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo hi",
+        )
+    ]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, completion_consumed=True)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_agent_watcher_dict())
+
+    assert adapter.handle_message.await_count == 0
+    assert adapter.send.await_count == 0
