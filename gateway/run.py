@@ -17101,7 +17101,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # poll() is read-only and intentionally does NOT mark consumed
                 # (#10156) — a status check must not suppress this delivery turn.
                 from tools.process_registry import format_process_notification, process_registry as _pr_check
-                if agent_notify and not _pr_check.is_completion_consumed(session_id):
+                # If this watcher was created with notify_on_complete=True, it
+                # is meant to trigger a NEW agent turn — never fall through to
+                # the user-facing text notification path (which would emit a
+                # noisy "[Background process X finished...]" bubble in chat).
+                if agent_notify:
+                    # Skip injection if the agent already consumed completion
+                    # via wait/log — the result is already in its context.
+                    if _pr_check.is_completion_consumed(session_id):
+                        logger.debug(
+                            "Process %s completion already consumed by agent — skipping notification",
+                            session_id,
+                        )
+                        break
                     from agent.redact import redact_terminal_output
                     from tools.ansi_strip import strip_ansi
                     _command = getattr(session, "command", "") or ""
@@ -17148,6 +17160,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # The process remains terminal; retry after failed
                         # adapter injection instead of suppressing the result.
                         continue
+                    # agent_notify watchers ALWAYS exit here — never fall
+                    # through to the user-facing text notification path.
                     break
 
                 # --- Normal text-only notification ---
