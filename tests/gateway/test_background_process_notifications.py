@@ -613,3 +613,61 @@ def test_gateway_drain_retains_and_formats_overflow_events():
     out_released = _format_gateway_process_notification(released)
     assert "notifications resumed" in out_released
     assert "exit code" not in out_released
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_suppresses_user_facing_text_notification(
+    monkeypatch, tmp_path
+):
+    """Agent completion delivery must not also emit the raw text bubble."""
+    import tools.process_registry as pr_module
+    from gateway.session import SessionSource
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo hi",
+        )
+    ]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
+    )
+
+    async def _instant_sleep(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    session_key = "agent:main:telegram:group:-100:42"
+    runner.session_store._entries[session_key] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            thread_id="42",
+            user_id="u1",
+            user_name="alice",
+        )
+    )
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = _watcher_dict()
+    watcher.update(
+        {
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "-100",
+            "thread_id": "42",
+            "user_id": "u1",
+            "user_name": "alice",
+            "notify_on_complete": True,
+        }
+    )
+
+    await runner._run_process_watcher(watcher)
+
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].internal is True
+    adapter.send.assert_not_awaited()
