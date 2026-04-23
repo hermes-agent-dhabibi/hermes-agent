@@ -1747,21 +1747,7 @@ def terminal_tool(
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
-        # Auto-background detection: upgrade known long-running commands
-        # to background mode so they don't hang the agent thread.
         auto_bg_note = None
-        if not background and _should_auto_background(command):
-            # Check config toggle via env var (set by CLI/gateway from config.yaml).
-            # Avoids re-parsing config.yaml on every call.
-            auto_bg_enabled = os.getenv("TERMINAL_AUTO_BACKGROUND", "true").lower() not in ("false", "0", "no")
-            if auto_bg_enabled:
-                background = True
-                notify_on_complete = True
-                auto_bg_note = (
-                    "⚡ Auto-backgrounded: this command matches a known long-running "
-                    "pattern. Set terminal.auto_background: false in config.yaml to disable."
-                )
-                logger.info("Auto-background triggered for command: %s", _safe_command_preview(command))
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
@@ -1785,6 +1771,22 @@ def terminal_tool(
                     "error": guidance,
                     "status": "error",
                 }, ensure_ascii=False)
+
+        # Auto-background detection: upgrade known long-running commands
+        # to managed background sessions only after explicit foreground
+        # guardrails have had a chance to reject unsafe wrappers/server starts.
+        if not background and _should_auto_background(command):
+            # Check config toggle via env var (set by CLI/gateway from config.yaml).
+            # Avoids re-parsing config.yaml on every call.
+            auto_bg_enabled = os.getenv("TERMINAL_AUTO_BACKGROUND", "true").lower() not in ("false", "0", "no")
+            if auto_bg_enabled and not _looks_like_help_or_version_command(command):
+                background = True
+                notify_on_complete = True
+                auto_bg_note = (
+                    "⚡ Auto-backgrounded: this command matches a known long-running "
+                    "pattern. Set terminal.auto_background: false in config.yaml to disable."
+                )
+                logger.info("Auto-background triggered for command: %s", _safe_command_preview(command))
 
         # Start cleanup thread
         _start_cleanup_thread()

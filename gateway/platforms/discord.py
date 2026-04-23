@@ -1286,15 +1286,12 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
+            formatted = self.format_message(content)
+            if len(formatted) > self.MAX_MESSAGE_LENGTH:
+                return SendResult(success=False, error="message_too_long")
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
-            formatted = self.format_message(content)
-            if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
-            # Use get_partial_message to avoid an extra fetch round-trip.
-            # Discord's API supports editing by ID directly; the fetch_message
-            # call was redundant and often 503'd under load.
             partial = channel.get_partial_message(int(message_id))
             await partial.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
@@ -3386,20 +3383,9 @@ class DiscordAdapter(BasePlatformAdapter):
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
                             logger.info("[Discord] Cached user document: %s", cached_path)
-                            # Inject text content for text-readable documents (capped at 100 KB).
-                            # Covers code files, config files, markup, and plain text —
-                            # anything with a text/* MIME type or known text-like types.
-                            _TEXT_LIKE_MIMES = ("text/", "application/json", "application/jsonl")
-                            _BINARY_EXTS = {".pdf", ".zip", ".docx", ".xlsx", ".pptx"}
+                            # Inject text content for plain-text documents (capped at 100 KB)
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            _is_text = (
-                                ext not in _BINARY_EXTS
-                                and (
-                                    any(doc_mime.startswith(p) for p in _TEXT_LIKE_MIMES)
-                                    or ext in (".json", ".jsonl", ".xml", ".csv", ".tsv", ".svg")
-                                )
-                            )
-                            if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"

@@ -7486,17 +7486,18 @@ class AIAgent:
                             function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
                         ) for tc in _flush_result.tool_calls
                     ]
+            elif _aux_available and hasattr(response, "choices") and response.choices:
+                # Auxiliary client returned OpenAI-shaped response; prefer the
+                # direct extraction path because some lightweight test doubles
+                # and adapters omit fields expected by transport normalization.
+                _aux_msg = response.choices[0].message
+                if hasattr(_aux_msg, "tool_calls") and _aux_msg.tool_calls:
+                    tool_calls = _aux_msg.tool_calls
             elif self.api_mode in ("chat_completions", "bedrock_converse"):
                 # chat_completions / bedrock — normalize through transport
                 _flush_result = self._get_transport().normalize_response(response)
                 if _flush_result.tool_calls:
                     tool_calls = _flush_result.tool_calls
-            elif _aux_available and hasattr(response, "choices") and response.choices:
-                # Auxiliary client returned OpenAI-shaped response while main
-                # api_mode is codex/anthropic — extract tool_calls from .choices
-                _aux_msg = response.choices[0].message
-                if hasattr(_aux_msg, "tool_calls") and _aux_msg.tool_calls:
-                    tool_calls = _aux_msg.tool_calls
 
             for tc in tool_calls:
                 if tc.function.name == "memory":
