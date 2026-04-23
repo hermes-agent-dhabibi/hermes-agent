@@ -1617,8 +1617,14 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
 # below — never look up auth env vars ad-hoc.
 
 
-def _to_async_client(sync_client, model: str):
-    """Convert a sync client to its async counterpart, preserving Codex routing."""
+def _to_async_client(sync_client, model: str, is_vision: bool = False):
+    """Convert a sync client to its async counterpart, preserving Codex routing.
+
+    When ``is_vision=True`` and the underlying base URL is Copilot, the
+    resulting async client carries the ``Copilot-Vision-Request: true``
+    header so the request is routed to Copilot's vision-capable
+    infrastructure (otherwise vision payloads silently time out).
+    """
     from openai import AsyncOpenAI
 
     if isinstance(sync_client, CodexAuxiliaryClient):
@@ -1647,9 +1653,11 @@ def _to_async_client(sync_client, model: str):
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = dict(_OR_HEADERS)
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
-        from hermes_cli.models import copilot_default_headers
+        from hermes_cli.copilot_auth import copilot_request_headers
 
-        async_kwargs["default_headers"] = copilot_default_headers()
+        async_kwargs["default_headers"] = copilot_request_headers(
+            is_agent_turn=True, is_vision=is_vision
+        )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     return AsyncOpenAI(**async_kwargs), model
@@ -1676,6 +1684,7 @@ def resolve_provider_client(
     explicit_api_key: str = None,
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
+    is_vision: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -1845,11 +1854,13 @@ def resolve_provider_client(
             if base_url_host_matches(custom_base, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
-                from hermes_cli.models import copilot_default_headers
-                extra["default_headers"] = copilot_default_headers()
+                from hermes_cli.copilot_auth import copilot_request_headers
+                extra["default_headers"] = copilot_request_headers(
+                    is_agent_turn=True, is_vision=is_vision
+                )
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
-            return (_to_async_client(client, final_model) if async_mode
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then codex, then API-key providers
         for try_fn in (_try_custom_endpoint, _try_codex,
@@ -1989,9 +2000,11 @@ def resolve_provider_client(
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers["User-Agent"] = "claude-code/0.1.0"
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
+            from hermes_cli.copilot_auth import copilot_request_headers
 
-            headers.update(copilot_default_headers())
+            headers.update(copilot_request_headers(
+                is_agent_turn=True, is_vision=is_vision
+            ))
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
@@ -2162,6 +2175,8 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
 
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
     provider = _normalize_vision_provider(provider)
+    if provider == "copilot":
+        return resolve_provider_client("copilot", "gpt-5-mini", is_vision=True)
     if provider == "openrouter":
         return _try_openrouter()
     if provider == "nous":
@@ -2229,7 +2244,7 @@ def resolve_vision_provider_client(
             return resolved_provider, None, None
         final_model = resolved_model or default_model
         if async_mode:
-            async_client, async_model = _to_async_client(sync_client, final_model)
+            async_client, async_model = _to_async_client(sync_client, final_model, is_vision=True)
             return resolved_provider, async_client, async_model
         return resolved_provider, sync_client, final_model
 
@@ -2273,7 +2288,8 @@ def resolve_vision_provider_client(
                 vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
-                    api_mode=resolved_api_mode)
+                    api_mode=resolved_api_mode,
+                    is_vision=True)
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using main provider %s (%s)",
