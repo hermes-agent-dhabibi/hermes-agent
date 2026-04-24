@@ -1,10 +1,13 @@
 # Custom Patches
 
-Our fork's patch layer. Synced onto `my/upstream-20260423` from `upstream/main` at `1cc0bdd5`.
+Our fork's patch layer. Synced onto `my/v0.11.0` from `upstream/main` at tag `v2026.4.23` (release v0.11.0).
 
-Last updated: 2026-04-23
-Base: `my/upstream-20260423`, tip `39a162b3`
-Upstream base commit: `1cc0bdd5`
+Last updated: 2026-04-23 (post v0.11.0 release)
+Base: `my/v0.11.0`, tip `fa9f608d`
+Upstream base tag: `v2026.4.23` (commit `bf196a3f`)
+
+**Dropped this rebase:**
+- `89cd6a11 fix(discord): bump sync timeout to 60s with 3 retries` — superseded by upstream `a1ff6b45 add safe startup slash sync policy` which adds policy controls (`safe`/`bulk`/`off`) plus its own timeout/retry handling and per-command reconciliation.
 
 ---
 
