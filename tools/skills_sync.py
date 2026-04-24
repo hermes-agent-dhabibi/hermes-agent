@@ -139,7 +139,8 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
     if not bundled_dir.exists():
         return skills
 
-    for skill_md in bundled_dir.rglob("SKILL.md"):
+    from agent.skill_utils import iter_skill_index_files
+    for skill_md in iter_skill_index_files(bundled_dir, "SKILL.md"):
         path_str = str(skill_md)
         if "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str:
             continue
