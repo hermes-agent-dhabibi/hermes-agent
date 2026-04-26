@@ -58,6 +58,7 @@ Oldest to newest.
 | `6c2ad31f` | `8e68e855` | fix: add ad-hoc HTTP servers (python -m http.server, php -S, etc.) to auto-background |
 | `6b172954` | `2e20c56a` | fix(terminal): comprehensive auto-background detection rewrite |
 | `8ab50be9` | `39a162b3` | fix(gateway): suppress user-facing notification when notify_on_complete=true |
+| —          | `10f9a80f` | fix(discord): decouple free-response from auto-thread (revert upstream `93fe4b35` coupling) |
 
 ---
 
