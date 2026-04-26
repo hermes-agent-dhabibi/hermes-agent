@@ -9601,10 +9601,6 @@ class GatewayRunner:
         def _step_callback_sync(iteration: int, prev_tools: list) -> None:
             if not _run_still_current():
                 return
-            # Signal a new tool-progress group so each iteration's tools
-            # get their own editable message (chronological with thinking).
-            if progress_queue:
-                progress_queue.put("__new_group__")
             try:
                 # prev_tools may be list[str] or list[dict] with "name"/"result"
                 # keys.  Normalise to keep "tool_names" backward-compatible for
