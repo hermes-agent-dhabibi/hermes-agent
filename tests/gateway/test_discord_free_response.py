@@ -59,7 +59,7 @@ class FakeTextChannel:
     def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=1000, name=guild_name)
         self.topic = None
 
 
@@ -67,7 +67,7 @@ class FakeForumChannel:
     def __init__(self, channel_id: int = 1, name: str = "support-forum", guild_name: str = "Hermes Server"):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=1000, name=guild_name)
         self.type = 15
         self.topic = None
 
@@ -78,7 +78,7 @@ class FakeThread:
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
-        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        self.guild = getattr(parent, "guild", None) or SimpleNamespace(id=1000, name=guild_name)
         self.topic = None
 
 
@@ -106,6 +106,7 @@ def make_message(*, channel, content: str, mentions=None, msg_type=None):
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=channel,
+        guild=getattr(channel, "guild", None),
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
     )
