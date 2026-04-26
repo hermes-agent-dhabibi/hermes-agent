@@ -447,16 +447,45 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 
 @pytest.mark.asyncio
-async def test_discord_free_channel_skips_auto_thread(adapter, monkeypatch):
-    """Free-response channels must NOT auto-create threads — bot replies inline.
+async def test_discord_free_channel_independent_of_auto_thread(adapter, monkeypatch):
+    """Free-response and auto-thread are independent toggles.
 
-    Without this, every message in a free-response channel would spin off a
-    thread (since the channel bypasses the @mention gate), defeating the
-    lightweight-chat purpose of free-response mode.
+    free_response_channels controls the @mention gate; auto_thread controls
+    thread spawning. A channel can be both — Slack-style: chat freely, and
+    each top-level message gets its own thread. Suppressing auto-thread in a
+    free-response channel requires DISCORD_NO_THREAD_CHANNELS or
+    DISCORD_AUTO_THREAD=false explicitly.
     """
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="free chat message",
+    )
+
+    await adapter._handle_message(message)
+
+    # Free-response bypasses @mention but does NOT suppress auto-thread.
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_channel_in_no_thread_list_skips_auto_thread(adapter, monkeypatch):
+    """Opt-in inline behavior: list the channel in DISCORD_NO_THREAD_CHANNELS."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
 
     adapter._auto_create_thread = AsyncMock()
 
