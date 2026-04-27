@@ -43,10 +43,16 @@ def _ensure_discord_mock():
                 self.callback = callback
                 self.parent = parent
 
+        def _autocomplete(**kwargs):
+            def decorator(fn):
+                setattr(fn, "__autocomplete_callbacks__", kwargs)
+                return fn
+            return decorator
+
         discord_mod.app_commands = SimpleNamespace(
             describe=lambda **kwargs: (lambda fn: fn),
             choices=lambda **kwargs: (lambda fn: fn),
-            autocomplete=lambda **kwargs: (lambda fn: fn),
+            autocomplete=_autocomplete,
             Choice=lambda **kwargs: SimpleNamespace(**kwargs),
             Group=_FakeGroup,
             Command=_FakeCommand,
@@ -68,7 +74,12 @@ def _ensure_discord_mock():
     _app = getattr(sys.modules["discord"], "app_commands", None)
     if _app is not None and not hasattr(_app, "autocomplete"):
         try:
-            _app.autocomplete = lambda **kwargs: (lambda fn: fn)
+            def _autocomplete(**kwargs):
+                def decorator(fn):
+                    setattr(fn, "__autocomplete_callbacks__", kwargs)
+                    return fn
+                return decorator
+            _app.autocomplete = _autocomplete
         except Exception:
             pass
 
@@ -632,6 +643,7 @@ def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza
         reference=None,
         created_at=None,
         id=12345,
+        guild=getattr(channel, "guild", None),
     )
 
 
@@ -769,6 +781,23 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 # ------------------------------------------------------------------
 
 
+def _fake_skill_commands(names: list[str]) -> dict[str, dict[str, str]]:
+    """Build a realistic get_skill_commands() mapping for /skill tests."""
+    return {
+        f"/{name}": {
+            "name": name,
+            "description": f"Description for {name}",
+            "skill_md_path": f"/home/hermes/.hermes/skills/test/{name}/SKILL.md",
+            "skill_dir": f"/home/hermes/.hermes/skills/test/{name}",
+        }
+        for name in names
+    }
+
+
+def _skill_autocomplete_callback(skill_cmd):
+    return getattr(skill_cmd.callback, "__autocomplete_callbacks__", {})["name"]
+
+
 def test_register_skill_command_is_flat_not_nested(adapter):
     """_register_skill_group should register a single flat ``/skill`` command.
 
@@ -778,22 +807,14 @@ def test_register_skill_command_is_flat_not_nested(adapter):
     flat layout sidesteps the limit — autocomplete options are fetched
     dynamically by Discord and don't count against the registration budget.
     """
-    mock_categories = {
-        "creative": [
-            ("ascii-art", "Generate ASCII art", "/ascii-art"),
-            ("excalidraw", "Hand-drawn diagrams", "/excalidraw"),
-        ],
-        "media": [
-            ("gif-search", "Search for GIFs", "/gif-search"),
-        ],
-    }
-    mock_uncategorized = [
-        ("dogfood", "Exploratory QA testing", "/dogfood"),
-    ]
+    mock_cmds = _fake_skill_commands(["ascii-art", "excalidraw", "gif-search", "dogfood"])
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(mock_categories, mock_uncategorized, 0),
+        "agent.skill_commands.get_skill_commands",
+        return_value=mock_cmds,
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
     ):
         adapter._register_slash_commands()
 
@@ -810,8 +831,11 @@ def test_register_skill_command_is_flat_not_nested(adapter):
 def test_register_skill_command_empty_skills_no_command(adapter):
     """No /skill command should be registered when there are zero skills."""
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=({}, [], 0),
+        "agent.skill_commands.get_skill_commands",
+        return_value={},
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
     ):
         adapter._register_slash_commands()
 
@@ -823,18 +847,14 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     """The /skill callback should look up the skill by ``name`` and
     dispatch via ``_run_simple_slash`` with the real command key.
     """
-    mock_categories = {
-        "media": [
-            ("gif-search", "Search for GIFs", "/gif-search"),
-        ],
-    }
-    mock_uncategorized = [
-        ("dogfood", "QA testing", "/dogfood"),
-    ]
+    mock_cmds = _fake_skill_commands(["gif-search", "dogfood"])
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(mock_categories, mock_uncategorized, 0),
+        "agent.skill_commands.get_skill_commands",
+        return_value=mock_cmds,
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
     ):
         adapter._register_slash_commands()
 
@@ -865,8 +885,11 @@ def test_register_skill_command_handles_unknown_skill_gracefully(adapter):
     an ephemeral error message, NOT crash the callback.
     """
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=({"media": [("gif-search", "GIFs", "/gif-search")]}, [], 0),
+        "agent.skill_commands.get_skill_commands",
+        return_value=_fake_skill_commands(["gif-search"]),
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
     ):
         adapter._register_slash_commands()
 
@@ -901,20 +924,16 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
     """
     import json
 
-    # Simulate the largest catalog the collector will ever produce:
-    # 20 categories × 25 skills each, with verbose 100-char descriptions.
-    large_categories: dict[str, list[tuple[str, str, str]]] = {}
-    long_desc = "A verbose description padded to approximately 100 chars " + "." * 42
-    for i in range(20):
-        cat = f"cat{i:02d}"
-        large_categories[cat] = [
-            (f"skill-{i:02d}-{j:02d}", long_desc, f"/skill-{i:02d}-{j:02d}")
-            for j in range(25)
-        ]
+    # Simulate a large catalog. Autocomplete choices are not serialized into
+    # the command payload, so payload size should remain essentially constant.
+    large_skill_names = [f"skill-{i:02d}-{j:02d}" for i in range(20) for j in range(25)]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(large_categories, [], 0),
+        "agent.skill_commands.get_skill_commands",
+        return_value=_fake_skill_commands(large_skill_names),
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
     ):
         adapter._register_slash_commands()
 
@@ -935,34 +954,138 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
     )
 
 
-def test_register_skill_command_autocomplete_filters_by_name_and_description(adapter):
-    """The autocomplete callback should match on both skill name and
-    description so the user can search by either.
+def test_register_skill_command_autocomplete_filters_by_name_category_and_description(adapter):
+    """The autocomplete callback should prioritize prefix matches, then
+    name substrings, then category/description matches.
     """
-    mock_categories = {
-        "ocr": [
-            ("ocr-and-documents", "Extract text from PDFs and scanned documents", "/ocr-and-documents"),
-        ],
-        "media": [
-            ("gif-search", "Search and download GIFs from Tenor", "/gif-search"),
-        ],
+    mock_cmds = {
+        "/ocr-and-documents": {
+            "name": "ocr-and-documents",
+            "description": "Extract text from PDFs and scanned documents",
+            "skill_md_path": "/home/hermes/.hermes/skills/ocr-and-documents/SKILL.md",
+            "skill_dir": "/home/hermes/.hermes/skills/ocr-and-documents",
+        },
+        "/gif-search": {
+            "name": "gif-search",
+            "description": "Search and download GIFs from Tenor",
+            "skill_md_path": "/home/hermes/.hermes/skills/media/gif-search/SKILL.md",
+            "skill_dir": "/home/hermes/.hermes/skills/media/gif-search",
+        },
+        "/alpha-pdf": {
+            "name": "alpha-pdf",
+            "description": "Prefix match should rank ahead of description hits",
+            "skill_md_path": "/home/hermes/.hermes/skills/docs/alpha-pdf/SKILL.md",
+            "skill_dir": "/home/hermes/.hermes/skills/docs/alpha-pdf",
+        },
+        "/zz-alpha": {
+            "name": "zz-alpha",
+            "description": "Name substring match should rank after prefix",
+            "skill_md_path": "/home/hermes/.hermes/skills/docs/zz-alpha/SKILL.md",
+            "skill_dir": "/home/hermes/.hermes/skills/docs/zz-alpha",
+        },
     }
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(mock_categories, [], 0),
+        "agent.skill_commands.get_skill_commands",
+        return_value=mock_cmds,
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
     ):
         adapter._register_slash_commands()
 
     skill_cmd = adapter._client.tree.commands["skill"]
-    # The callback has been wrapped with @autocomplete(name=...) — in our mock
-    # the decorator is pass-through, so we inspect the closed-over list by
-    # invoking the registered autocomplete function directly through the
-    # test API. Since the mock doesn't preserve the autocomplete binding,
-    # we re-derive the filter by building the same entries list.
-    #
-    # What we CAN verify at this layer: the callback dispatches correctly
-    # (covered in other tests). The autocomplete filter itself is exercised
-    # via direct function call in the real-discord integration path.
-    assert skill_cmd.callback is not None
+    autocomplete = _skill_autocomplete_callback(skill_cmd)
+
+    import asyncio
+
+    by_description = asyncio.run(autocomplete(SimpleNamespace(), "pdf"))
+    assert [choice.value for choice in by_description] == ["alpha-pdf", "ocr-and-documents"]
+
+    by_category = asyncio.run(autocomplete(SimpleNamespace(), "media"))
+    assert [choice.value for choice in by_category] == ["gif-search"]
+
+    by_name_substring = asyncio.run(autocomplete(SimpleNamespace(), "alpha"))
+    assert [choice.value for choice in by_name_substring][:2] == ["alpha-pdf", "zz-alpha"]
+
+
+
+def test_register_skill_command_source_is_unbounded_by_legacy_group_caps(adapter):
+    """Autocomplete must source every skill from get_skill_commands(), not the
+    legacy 25-group/25-per-group Discord subcommand collector.
+    """
+    old_cap_fillers = [f"filler-{i:03d}" for i in range(95)]
+    important_skills = ["discrawl-recall", "systematic-debugging", "dogfood"]
+    mock_cmds = _fake_skill_commands(old_cap_fillers + important_skills)
+
+    with patch(
+        "agent.skill_commands.get_skill_commands",
+        return_value=mock_cmds,
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
+    ), patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        side_effect=AssertionError("/skill autocomplete must not use the capped category helper"),
+    ):
+        adapter._register_slash_commands()
+
+    skill_cmd = adapter._client.tree.commands["skill"]
+    autocomplete = _skill_autocomplete_callback(skill_cmd)
+
+    import asyncio
+
+    for name in important_skills:
+        choices = asyncio.run(autocomplete(SimpleNamespace(), name))
+        assert choices
+        assert choices[0].value == name
+
+    dispatched: list[str] = []
+
+    async def fake_run(_interaction, text):
+        dispatched.append(text)
+
+    adapter._run_simple_slash = fake_run
+    asyncio.run(skill_cmd.callback(SimpleNamespace(), name="discrawl-recall", args="foo"))
+    asyncio.run(skill_cmd.callback(SimpleNamespace(), name="systematic-debugging"))
+    asyncio.run(skill_cmd.callback(SimpleNamespace(), name="dogfood", args="bar"))
+
+    assert dispatched == [
+        "/discrawl-recall foo",
+        "/systematic-debugging",
+        "/dogfood bar",
+    ]
+
+
+def test_register_skill_command_source_filters_discord_disabled_skills(adapter):
+    mock_cmds = _fake_skill_commands(["discrawl-recall", "systematic-debugging", "dogfood"])
+
+    with patch(
+        "agent.skill_commands.get_skill_commands",
+        return_value=mock_cmds,
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value={"systematic-debugging"},
+    ):
+        adapter._register_slash_commands()
+
+    skill_cmd = adapter._client.tree.commands["skill"]
+    autocomplete = _skill_autocomplete_callback(skill_cmd)
+
+    import asyncio
+
+    choices = asyncio.run(autocomplete(SimpleNamespace(), "systematic"))
+    assert [choice.value for choice in choices] == []
+
+    dispatched: list[str] = []
+
+    async def fake_run(_interaction, text):
+        dispatched.append(text)
+
+    adapter._run_simple_slash = fake_run
+    interaction = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
+
+    asyncio.run(skill_cmd.callback(interaction, name="systematic-debugging", args="foo"))
+    assert dispatched == []
+    interaction.response.send_message.assert_awaited_once()
 
