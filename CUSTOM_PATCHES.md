@@ -69,6 +69,7 @@ Upstream divergence point: 273 commits behind `upstream/main`
 
 | # | Hash | Status | Description | Files touched |
 |---|------|--------|-------------|---------------|
+| 45 | `c723d7c51` | ✅ KEEP | fix(discord): source `/skill` autocomplete from full skill catalog | `gateway/platforms/discord.py`, `tests/gateway/test_discord_slash_commands.py` |
 | 34 | `c2a7387e` | ✅ KEEP | fix: expand supported document types and text injection for inbound file uploads | gateway |
 | 33 | `d4f73ac5` | ✅ KEEP | fix(discord): preserve more reasoning detail and fail fast on oversize edits | `gateway/platforms/discord.py` |
 | 29 | `e878da90` | ✅ KEEP | fix(discord): use get_partial_message for edits to avoid 503s | `gateway/platforms/discord.py` |
@@ -140,7 +141,7 @@ When creating a new patch branch, cherry-pick in this order:
 3. Compaction (`5a074f54`, `7587579d`, `eeb81e8e`) — review against new upstream compressor first
 4. Auxiliary plumbing (`d755400c`, `38140cd6`) — review against upstream changes first
 5. Config/CLI (`1e68bd46`, `3f37769c`, `040c22de`, `3bca7e1c`)
-6. Discord (`c2a7387e`, `d4f73ac5`, `e878da90`, `9467f5ad`, `ed78e870`)
+6. Discord (`c723d7c51`, `c2a7387e`, `d4f73ac5`, `e878da90`, `9467f5ad`, `ed78e870`)
 7. Web/Search (`b84c7c70`)
 8. Media/Files (`eea408d6`, `7865a3be`, `3a5d738c`)
 9. Cron (`44342c34`)
