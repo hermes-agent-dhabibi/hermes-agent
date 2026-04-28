@@ -1089,3 +1089,58 @@ def test_register_skill_command_source_filters_discord_disabled_skills(adapter):
     assert dispatched == []
     interaction.response.send_message.assert_awaited_once()
 
+
+
+@pytest.mark.asyncio
+async def test_registers_native_refreshskills_slash_command(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "refreshskills" in adapter._client.tree.commands
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["refreshskills"](interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction,
+        "/refreshskills",
+        "Skill autocomplete cache refresh requested~",
+    )
+
+
+def test_refresh_skill_autocomplete_cache_rebuilds_skill_command_snapshot(adapter):
+    first = _fake_skill_commands(["old-skill"])
+    second = _fake_skill_commands(["old-skill", "new-skill"])
+    scans: list[str] = []
+
+    def fake_scan_skill_commands():
+        scans.append("scan")
+        return second
+
+    with patch(
+        "agent.skill_commands.get_skill_commands",
+        return_value=first,
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
+    ):
+        adapter._register_slash_commands()
+
+    skill_cmd = adapter._client.tree.commands["skill"]
+    autocomplete = _skill_autocomplete_callback(skill_cmd)
+
+    import asyncio
+    assert [choice.value for choice in asyncio.run(autocomplete(SimpleNamespace(), "new"))] == []
+
+    with patch(
+        "agent.skill_commands.scan_skill_commands",
+        side_effect=fake_scan_skill_commands,
+    ), patch(
+        "agent.skill_utils.get_disabled_skill_names",
+        return_value=set(),
+    ):
+        refreshed_count = adapter.refresh_skill_autocomplete_cache()
+
+    assert refreshed_count == 2
+    assert scans == ["scan"]
+    assert [choice.value for choice in asyncio.run(autocomplete(SimpleNamespace(), "new"))] == ["new-skill"]

@@ -2405,6 +2405,14 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reload_skills(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-skills")
 
+        @tree.command(name="refreshskills", description="Refresh skill autocomplete cache")
+        async def slash_refreshskills(interaction: discord.Interaction):
+            await self._run_simple_slash(
+                interaction,
+                "/refreshskills",
+                "Skill autocomplete cache refresh requested~",
+            )
+
         @tree.command(name="voice", description="Toggle voice reply mode")
         @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
         @discord.app_commands.choices(mode=[
@@ -2569,6 +2577,61 @@ class DiscordAdapter(BasePlatformAdapter):
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
 
+    def _build_skill_autocomplete_entries(
+        self,
+        skill_cmds: Optional[dict[str, dict[str, Any]]] = None,
+    ) -> tuple[list[tuple[str, str, str, str]], dict[str, tuple[str, str]]]:
+        """Build /skill autocomplete entries and dispatch lookup from current skills."""
+        from agent.skill_utils import get_disabled_skill_names
+
+        if skill_cmds is None:
+            from agent.skill_commands import get_skill_commands
+            skill_cmds = get_skill_commands()
+
+        disabled_for_discord = get_disabled_skill_names(platform="discord")
+
+        entries: list[tuple[str, str, str, str]] = []
+        for cmd_key in sorted(skill_cmds):
+            info = skill_cmds[cmd_key] or {}
+            skill_name = str(info.get("name") or cmd_key.lstrip("/"))
+            if skill_name in disabled_for_discord:
+                continue
+            name = cmd_key.lstrip("/")
+            if not name:
+                continue
+            desc = str(info.get("description") or "")
+            category = ""
+            skill_dir = str(info.get("skill_dir") or "")
+            skill_path = str(info.get("skill_md_path") or "")
+            for path_str in (skill_dir, skill_path):
+                parts = [part for part in path_str.split("/") if part]
+                if "skills" in parts:
+                    idx = parts.index("skills")
+                    if idx + 1 < len(parts) and parts[idx + 1] != name:
+                        category = parts[idx + 1]
+                        break
+            entries.append((name, desc, cmd_key, category))
+
+        entries.sort(key=lambda t: t[0])
+        skill_lookup: dict[str, tuple[str, str]] = {
+            n: (d, k) for n, d, k, _cat in entries
+        }
+        return entries, skill_lookup
+
+    def refresh_skill_autocomplete_cache(
+        self,
+        skill_cmds: Optional[dict[str, dict[str, Any]]] = None,
+    ) -> int:
+        """Update the live Discord /skill autocomplete cache from current skills."""
+        if skill_cmds is None:
+            from agent.skill_commands import scan_skill_commands
+            skill_cmds = scan_skill_commands()
+
+        entries, skill_lookup = self._build_skill_autocomplete_entries(skill_cmds)
+        self._skill_autocomplete_entries = entries
+        self._skill_lookup = skill_lookup
+        return len(entries)
+
     def _register_skill_group(self, tree) -> None:
         """Register a single ``/skill`` command with autocomplete on the name.
 
@@ -2589,46 +2652,17 @@ class DiscordAdapter(BasePlatformAdapter):
         skill name and its description.
         """
         try:
-            from agent.skill_commands import get_skill_commands
-            from agent.skill_utils import get_disabled_skill_names
-
-            disabled_for_discord = get_disabled_skill_names(platform="discord")
-            skill_cmds = get_skill_commands()
-
-            entries: list[tuple[str, str, str, str]] = []
-            for cmd_key in sorted(skill_cmds):
-                info = skill_cmds[cmd_key] or {}
-                skill_name = str(info.get("name") or cmd_key.lstrip("/"))
-                if skill_name in disabled_for_discord:
-                    continue
-                name = cmd_key.lstrip("/")
-                if not name:
-                    continue
-                desc = str(info.get("description") or "")
-                category = ""
-                skill_dir = str(info.get("skill_dir") or "")
-                skill_path = str(info.get("skill_md_path") or "")
-                for path_str in (skill_dir, skill_path):
-                    parts = [part for part in path_str.split("/") if part]
-                    if "skills" in parts:
-                        idx = parts.index("skills")
-                        if idx + 1 < len(parts) and parts[idx + 1] != name:
-                            category = parts[idx + 1]
-                            break
-                entries.append((name, desc, cmd_key, category))
+            entries, skill_lookup = self._build_skill_autocomplete_entries()
 
             if not entries:
                 return
 
             # Stable alphabetical order so the autocomplete suggestion
-            # list is predictable across restarts.
-            entries.sort(key=lambda t: t[0])
-
-            # name -> (description, cmd_key) — used by both the autocomplete
-            # callback and the handler for O(1) dispatch.
-            skill_lookup: dict[str, tuple[str, str]] = {
-                n: (d, k) for n, d, k, _cat in entries
-            }
+            # list is predictable across restarts. Store the mutable list on
+            # the adapter so /refreshskills can replace it in-place without
+            # re-registering Discord commands.
+            self._skill_autocomplete_entries = entries
+            self._skill_lookup = skill_lookup
 
             async def _autocomplete_name(
                 interaction: "discord.Interaction", current: str,
@@ -2642,8 +2676,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 apply to dynamic autocomplete responses.
                 """
                 q = (current or "").strip().lower()
+                current_entries = getattr(self, "_skill_autocomplete_entries", entries)
                 ranked: list[tuple[int, str, str, str]] = []
-                for name, desc, _key, category in entries:
+                for name, desc, _key, category in current_entries:
                     name_l = name.lower()
                     desc_l = desc.lower() if desc else ""
                     cat_l = category.lower() if category else ""
@@ -2684,7 +2719,8 @@ class DiscordAdapter(BasePlatformAdapter):
             async def _skill_handler(
                 interaction: "discord.Interaction", name: str, args: str = "",
             ):
-                entry = skill_lookup.get(name)
+                current_lookup = getattr(self, "_skill_lookup", skill_lookup)
+                entry = current_lookup.get(name)
                 if not entry:
                     await interaction.response.send_message(
                         f"Unknown skill: `{name}`. Start typing for "

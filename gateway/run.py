@@ -4890,6 +4890,9 @@ class GatewayRunner:
         if canonical == "reload-skills":
             return await self._handle_reload_skills_command(event)
 
+        if canonical == "refreshskills":
+            return await self._handle_refreshskills_command(event)
+
         if canonical == "approve":
             return await self._handle_approve_command(event)
 
@@ -9282,6 +9285,55 @@ class GatewayRunner:
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return f"Error generating insights: {e}"
+
+    async def _handle_refreshskills_command(self, event: MessageEvent) -> str:
+        """Handle /refreshskills -- rescan skills and refresh Discord autocomplete."""
+        loop = asyncio.get_running_loop()
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            from agent.skill_commands import scan_skill_commands
+
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+            skill_cmds = await loop.run_in_executor(None, scan_skill_commands)
+
+            def _refresh_discord_adapter() -> Optional[int]:
+                adapter = self.adapters.get(Platform.DISCORD)
+                if adapter is None or not hasattr(adapter, "refresh_skill_autocomplete_cache"):
+                    return None
+                return int(adapter.refresh_skill_autocomplete_cache(skill_cmds))
+
+            skill_count = await loop.run_in_executor(None, _refresh_discord_adapter)
+
+            # Cached AIAgent instances keep their original system prompt. Drop
+            # them so the next turn rebuilds against the refreshed skill index.
+            cache_cleared = 0
+            _lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache is not None:
+                if _lock:
+                    with _lock:
+                        cache_cleared = len(_cache)
+                        _cache.clear()
+                else:
+                    cache_cleared = len(_cache)
+                    _cache.clear()
+
+            if skill_count is None:
+                lines = [
+                    "✅ Refreshed the gateway skill cache.",
+                    "Discord autocomplete was not refreshed because no Discord adapter is configured.",
+                ]
+            else:
+                lines = [
+                    f"✅ Refreshed Discord skill autocomplete cache ({skill_count} skill(s)).",
+                    "Newly installed skills should now appear in `/skill` autocomplete without a gateway restart.",
+                ]
+            if cache_cleared:
+                lines.append(f"Cleared {cache_cleared} cached agent session(s) so future turns rebuild the skills prompt.")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning("Skill autocomplete refresh failed: %s", e, exc_info=True)
+            return f"❌ Skill autocomplete refresh failed: {e}"
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent.

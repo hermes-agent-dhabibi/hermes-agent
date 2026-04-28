@@ -7,7 +7,7 @@ delegate_task call instead of telling the user the command doesn't exist).
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -371,3 +371,58 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_refreshskills_command_without_discord_adapter_does_not_claim_discord_success(monkeypatch):
+    import threading
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._agent_cache = {"telegram:u1:c1": (object(), "sig")}
+    runner._agent_cache_lock = threading.Lock()
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "agent.skill_commands.scan_skill_commands",
+        return_value={"/sample-skill": {"name": "sample-skill"}},
+    ):
+        result = await runner._handle_message(_make_event("/refreshskills"))
+
+    assert "Refreshed the gateway skill cache" in result
+    assert "no Discord adapter is configured" in result
+    assert "Refreshed Discord skill autocomplete cache" not in result
+    assert "without a gateway restart" not in result
+    assert runner._agent_cache == {}
+
+
+@pytest.mark.asyncio
+async def test_refreshskills_command_refreshes_skill_cache_and_evicts_cached_agents(monkeypatch):
+    import threading
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    discord_adapter = SimpleNamespace(refresh_skill_autocomplete_cache=MagicMock(return_value=3))
+    runner.adapters[Platform.DISCORD] = discord_adapter
+    runner._agent_cache = {"telegram:u1:c1": (object(), "sig")}
+    runner._agent_cache_lock = threading.Lock()
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    with patch(
+        "agent.skill_commands.scan_skill_commands",
+        return_value={"/sample-skill": {"name": "sample-skill"}},
+    ):
+        result = await runner._handle_message(_make_event("/refreshskills"))
+
+    assert "Refreshed Discord skill autocomplete cache" in result
+    assert "3 skill" in result
+    assert runner._agent_cache == {}
+    discord_adapter.refresh_skill_autocomplete_cache.assert_called_once_with(
+        {"/sample-skill": {"name": "sample-skill"}}
+    )

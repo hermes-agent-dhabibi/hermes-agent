@@ -169,6 +169,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
+    CommandDef("refreshskills", "Refresh Discord skill autocomplete cache", "Tools & Skills",
+               gateway_only=True),
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
