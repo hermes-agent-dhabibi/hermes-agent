@@ -2645,6 +2645,14 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reload_skills(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-skills")
 
+        @tree.command(name="refreshskills", description="Refresh skill autocomplete cache")
+        async def slash_refreshskills(interaction: discord.Interaction):
+            await self._run_simple_slash(
+                interaction,
+                "/refreshskills",
+                "Skill autocomplete cache refresh requested~",
+            )
+
         @tree.command(name="voice", description="Toggle voice reply mode")
         @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
         @discord.app_commands.choices(mode=[
@@ -3052,6 +3060,33 @@ class DiscordAdapter(BasePlatformAdapter):
             self._skill_group_hidden_count,
         )
         return (len(self._skill_entries), self._skill_group_hidden_count)
+
+    def refresh_skill_autocomplete_cache(self, skill_cmds: dict[str, dict[str, Any]] | None = None) -> int:
+        """Compatibility refresh used by the legacy /refreshskills command."""
+        if skill_cmds is None:
+            from agent.skill_commands import scan_skill_commands
+            skill_cmds = scan_skill_commands()
+
+        from agent.skill_utils import get_disabled_skill_names
+        disabled_for_discord = get_disabled_skill_names(platform="discord")
+
+        entries: list[tuple[str, str, str]] = []
+        for cmd_key in sorted(skill_cmds):
+            info = skill_cmds[cmd_key] or {}
+            skill_name = str(info.get("name") or cmd_key.lstrip("/"))
+            if skill_name in disabled_for_discord:
+                continue
+            name = cmd_key.lstrip("/")
+            if not name:
+                continue
+            desc = str(info.get("description") or "")
+            entries.append((name, desc, cmd_key))
+
+        entries.sort(key=lambda t: t[0])
+        self._skill_entries = entries
+        self._skill_lookup = {n: (d, k) for n, d, k in entries}
+        self._skill_group_hidden_count = 0
+        return len(entries)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
