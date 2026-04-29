@@ -38,7 +38,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, message_id="progress-1")
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, finalize=False) -> SendResult:
         self.edits.append(
             {
                 "chat_id": chat_id,
@@ -743,6 +743,43 @@ async def test_run_agent_reasoning_dedupes_overlapping_replayed_summary(monkeypa
     assert sent_texts == [
         "💭\n> **Inspecting links for analysis**\n> \n> I need to inspect links."
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_reasoning_edits_replayed_summary_after_early_emit(monkeypatch, tmp_path):
+    first = (
+        "**Evaluating tool usage for test answers**\n\n"
+        "I see that I need to determine whether I should use a tool to answer questions about"
+    )
+    replay = (
+        " a failing test based on previously read file contents. If specifics are required, "
+        "using the tool would be necessary. I should inspect the test itself and perhaps "
+        "use git blame. To gather more context, I might need to read the file around "
+        "the test.**Evaluating tool usage for test answers**\n\n"
+        "I see that I need to determine whether I should use a tool to answer questions about "
+        "a failing test based on previously read file contents. If specifics are required, "
+        "using the tool would be necessary. I should inspect the test itself and perhaps "
+        "use git blame. To gather more context, I might need to read the file around the test."
+        + ("x" * 260)
+    )
+    ReasoningSummaryAgent.chunks = [first, replay]
+    ReasoningSummaryAgent.last_reasoning = None
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-reasoning-replay-after-emit",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
+    )
+
+    assert result["final_response"] == "done"
+    reasoning_messages = [
+        call["content"] for call in [*adapter.sent, *adapter.edits] if call["content"].startswith("💭")
+    ]
+    final_reasoning = reasoning_messages[-1]
+    assert "questions about questions about" not in final_reasoning
+    assert final_reasoning.count("**Evaluating tool usage for test answers**") == 1
+    assert "a failing test based on previously read file contents" in final_reasoning
 
 
 @pytest.mark.asyncio
