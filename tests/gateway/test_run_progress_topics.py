@@ -704,6 +704,48 @@ async def test_run_agent_reasoning_final_flush_emits_remaining_text(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_run_agent_reasoning_waits_for_body_after_markdown_heading(monkeypatch, tmp_path):
+    ReasoningSummaryAgent.chunks = ["**Inspecting links for analysis**\n\nI"]
+    ReasoningSummaryAgent.last_reasoning = None
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-reasoning-heading-fragment",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent if call["content"].startswith("💭")] == [
+        "💭\n> **Inspecting links for analysis**\n> \n> I"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_reasoning_dedupes_overlapping_replayed_summary(monkeypatch, tmp_path):
+    first = "**Inspecting links for analysis**\n\nI "
+    replay = (
+        "need to inspect links.**Inspecting links for analysis**\n\n"
+        "I need to inspect links."
+    )
+    ReasoningSummaryAgent.chunks = [first, replay]
+    ReasoningSummaryAgent.last_reasoning = None
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-reasoning-overlap-dedupe",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
+    )
+
+    assert result["final_response"] == "done"
+    sent_texts = [call["content"] for call in adapter.sent if call["content"].startswith("💭")]
+    assert sent_texts == [
+        "💭\n> **Inspecting links for analysis**\n> \n> I need to inspect links."
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_does_not_duplicate_final_last_reasoning(monkeypatch, tmp_path):
     ReasoningSummaryAgent.chunks = ["streamed summary"]
     ReasoningSummaryAgent.last_reasoning = "streamed summary"
