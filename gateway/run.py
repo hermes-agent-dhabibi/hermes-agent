@@ -9400,6 +9400,15 @@ class GatewayRunner:
                 default=True,
             )
         )
+        show_reasoning_enabled = (
+            source.platform != Platform.WEBHOOK
+            and bool(resolve_display_setting(
+                user_config,
+                platform_key,
+                "show_reasoning",
+                getattr(self, "_show_reasoning", False),
+            ))
+        )
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -9829,7 +9838,8 @@ class GatewayRunner:
             )
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
-            _want_interim_consumer = _want_interim_messages
+            _want_reasoning_messages = show_reasoning_enabled
+            _want_interim_consumer = _want_interim_messages or _want_reasoning_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
@@ -9882,24 +9892,58 @@ class GatewayRunner:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
-                        # Format as block quote for visual distinction from replies
-                        quoted = "\n".join(f"> {l}" for l in text.splitlines())
-                        _stream_consumer.on_commentary(f"💭\n{quoted}")
+                        _stream_consumer.on_commentary(text)
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
                 try:
-                    quoted = "\n".join(f"> {l}" for l in text.splitlines())
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
-                            f"💭\n{quoted}",
+                            text,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
                     )
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
+
+            def _send_thinking_text(text: str) -> None:
+                text = str(text or "").strip()
+                if not text:
+                    return
+                quoted = "\n".join(f"> {l}" for l in text.splitlines())
+                _interim_assistant_cb(f"💭\n{quoted}", already_streamed=False)
+
+            _reasoning_buffer: list[str] = []
+            _reasoning_last_emit = [time.monotonic()]
+            _REASONING_MIN_CHARS = 80
+            _REASONING_MIN_INTERVAL = 1.0
+
+            def _flush_reasoning_buffer(*, force: bool = False) -> None:
+                if not _run_still_current() or not _reasoning_buffer:
+                    return
+                text = "".join(_reasoning_buffer).strip()
+                if not text:
+                    _reasoning_buffer.clear()
+                    return
+                now = time.monotonic()
+                if (
+                    not force
+                    and len(text) < _REASONING_MIN_CHARS
+                    and now - _reasoning_last_emit[0] < _REASONING_MIN_INTERVAL
+                ):
+                    return
+                _reasoning_buffer.clear()
+                _reasoning_last_emit[0] = now
+                _send_thinking_text(text)
+
+            def _reasoning_cb(text: str) -> None:
+                chunk = str(text or "")
+                if not chunk.strip() or "reasoning.encrypted_content" in chunk:
+                    return
+                _reasoning_buffer.append(chunk)
+                _flush_reasoning_buffer(force=chunk.endswith(("\n", ".", "!", "?")))
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
@@ -9974,6 +10018,7 @@ class GatewayRunner:
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
+            agent.reasoning_callback = _reasoning_cb if _want_reasoning_messages else None
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
@@ -10276,6 +10321,7 @@ class GatewayRunner:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+            _flush_reasoning_buffer(force=True)
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
