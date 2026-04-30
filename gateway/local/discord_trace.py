@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 from gateway.local.discord_components import (
     ToolTraceItem,
@@ -86,6 +87,7 @@ class DiscordTraceSink:
         *,
         chat_id: str,
         metadata: Optional[dict[str, Any]] = None,
+        is_active: Callable[[], bool] | None = None,
         show_reasoning: bool = True,
         show_tools: bool = True,
         min_reasoning_chars: int = 240,
@@ -93,6 +95,7 @@ class DiscordTraceSink:
     ):
         self.adapter = adapter
         self.metadata = metadata
+        self._is_active_callback = is_active
         self.show_reasoning = show_reasoning
         self.show_tools = show_tools
         self.min_reasoning_chars = min_reasoning_chars
@@ -100,9 +103,27 @@ class DiscordTraceSink:
         self.state = DiscordTraceState(chat_id=str(chat_id))
         self._reasoning_buffer: list[str] = []
         self._last_flush = time.monotonic()
+        self._flush_lock = asyncio.Lock()
+        self._cancelled = False
+
+    @property
+    def closed(self) -> bool:
+        return self._cancelled
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def is_active(self) -> bool:
+        if self._cancelled:
+            return False
+        if self._is_active_callback is None:
+            return True
+        return bool(self._is_active_callback())
 
     def on_reasoning_delta(self, text: str) -> None:
         chunk = str(text or "")
+        if not self.is_active():
+            return
         if not self.show_reasoning or not chunk.strip():
             return
         if "reasoning.encrypted_content" in chunk:
@@ -120,6 +141,8 @@ class DiscordTraceSink:
         args: dict[str, Any] | None = None,
         **_: Any,
     ) -> None:
+        if not self.is_active():
+            return
         if not self.show_tools or not tool_name:
             return
         if event_type not in {"tool.started", "tool.completed", "tool.failed"}:
@@ -139,6 +162,8 @@ class DiscordTraceSink:
         return
 
     def flush_reasoning_buffer(self, *, force: bool = False) -> None:
+        if not self.is_active():
+            return
         if not self._reasoning_buffer:
             return
         buffered = "".join(self._reasoning_buffer)
@@ -153,14 +178,19 @@ class DiscordTraceSink:
         self._reasoning_buffer.clear()
         self._last_flush = now
 
-    async def flush(self, *, force: bool = False) -> SendResult | None:
+    async def _flush_locked(self, *, force: bool = False) -> SendResult | None:
+        if not self.is_active():
+            return None
         self.flush_reasoning_buffer(force=force)
+        if not self.is_active():
+            return None
         if not self.state.reasoning_text and not self.state.tools:
             return None
         rendered_hash = repr(build_trace_components_payload(self.state))
         if not force and rendered_hash == self.state.last_rendered_hash:
             return None
-        self.state.last_rendered_hash = rendered_hash
+        if not self.is_active():
+            return None
         if self.state.message_id:
             result = await self.adapter.edit_trace(
                 self.state.message_id,
@@ -169,10 +199,19 @@ class DiscordTraceSink:
             )
         else:
             result = await self.adapter.send_trace(self.state, metadata=self.metadata)
-            if result and result.success and result.message_id:
+        if result and result.success:
+            if not self.state.message_id and result.message_id:
                 self.state.message_id = str(result.message_id)
+            self.state.last_rendered_hash = rendered_hash
         return result
 
+    async def flush(self, *, force: bool = False) -> SendResult | None:
+        async with self._flush_lock:
+            return await self._flush_locked(force=force)
+
     async def finish(self) -> SendResult | None:
-        self.state.finalized = True
-        return await self.flush(force=True)
+        async with self._flush_lock:
+            if not self.is_active():
+                return None
+            self.state.finalized = True
+            return await self._flush_locked(force=True)
