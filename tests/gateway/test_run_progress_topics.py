@@ -20,6 +20,8 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.sent = []
         self.edits = []
         self.typing = []
+        self.traces_sent = []
+        self.traces_edited = []
 
     async def connect(self) -> bool:
         return True
@@ -50,6 +52,29 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id, metadata=None) -> None:
         self.typing.append({"chat_id": chat_id, "metadata": metadata})
+
+    @property
+    def supports_trace_components(self) -> bool:
+        return self.platform == Platform.DISCORD
+
+    async def send_trace(self, state, *, metadata=None) -> SendResult:
+        self.traces_sent.append({
+            "chat_id": state.chat_id,
+            "reasoning_text": state.reasoning_text,
+            "tools": list(state.tools),
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id="trace-1")
+
+    async def edit_trace(self, message_id, state, *, metadata=None) -> SendResult:
+        self.traces_edited.append({
+            "message_id": message_id,
+            "chat_id": state.chat_id,
+            "reasoning_text": state.reasoning_text,
+            "tools": list(state.tools),
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id=message_id)
 
     async def stop_typing(self, chat_id) -> None:
         self.typing.append({"chat_id": chat_id, "metadata": {"stopped": True}})
@@ -127,6 +152,47 @@ class DelayedInterimAgent:
         time.sleep(0.45)
         self.interim_assistant_callback("second interim")
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class InterruptingTraceAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.reasoning_callback = kwargs.get("reasoning_callback")
+        self.is_interrupted = False
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "first command", {})
+        self.is_interrupted = True
+        if self.reasoning_callback:
+            self.reasoning_callback("this reasoning should be dropped")
+        self.tool_progress_callback("tool.started", "terminal", "second command", {})
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class BlockingToolAgent:
+    started = None
+    resume = None
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "first command", {})
+        if self.started is not None:
+            self.started.set()
+        if self.resume is not None:
+            self.resume.wait(timeout=5)
         return {
             "final_response": "done",
             "messages": [],
@@ -802,6 +868,287 @@ async def test_run_agent_does_not_duplicate_final_last_reasoning(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_run_agent_discord_trace_receives_reasoning_when_enabled(monkeypatch, tmp_path):
+    ReasoningSummaryAgent.chunks = ["Planning the lookup", " and checking files."]
+    ReasoningSummaryAgent.last_reasoning = None
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-discord-trace-reasoning-enabled",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
+        platform=Platform.DISCORD,
+        chat_id="1479509172243664999",
+        chat_type="group",
+        thread_id="1499094649703366807",
+    )
+
+    assert result["final_response"] == "done"
+    trace_events = [*adapter.traces_sent, *adapter.traces_edited]
+    assert trace_events
+    assert trace_events[-1]["reasoning_text"] == "Planning the lookup and checking files."
+    assert trace_events[-1]["metadata"] == {"thread_id": "1499094649703366807"}
+    assert not any(call["content"].startswith("💭") for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_discord_trace_suppressed_when_reasoning_disabled(monkeypatch, tmp_path):
+    ReasoningSummaryAgent.chunks = ["Planning the lookup"]
+    ReasoningSummaryAgent.last_reasoning = None
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-discord-trace-reasoning-disabled",
+        config_data={"display": {"show_reasoning": False, "tool_progress": "off"}},
+        platform=Platform.DISCORD,
+        chat_id="1479509172243664999",
+        chat_type="group",
+        thread_id="1499094649703366807",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.traces_sent == []
+    assert adapter.traces_edited == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_discord_trace_receives_tool_events(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-discord-trace-tools",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "all"}},
+        platform=Platform.DISCORD,
+        chat_id="1479509172243664999",
+        chat_type="group",
+        thread_id="1499094649703366807",
+    )
+
+    assert result["final_response"] == "done"
+    trace_events = [*adapter.traces_sent, *adapter.traces_edited]
+    assert trace_events
+    tool_names = [tool.name for tool in trace_events[-1]["tools"]]
+    assert "terminal" in tool_names
+    assert "browser_navigate" in tool_names
+    legacy_progress = [
+        call["content"]
+        for call in [*adapter.sent, *adapter.edits]
+        if any(token in call["content"] for token in ("terminal", "browser_navigate"))
+    ]
+    assert legacy_progress == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_discord_trace_tool_preview_respects_default_cap(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        LongPreviewAgent,
+        session_id="sess-discord-trace-preview-default",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "all", "tool_preview_length": 0}},
+        platform=Platform.DISCORD,
+        chat_id="1479509172243664999",
+        chat_type="group",
+        thread_id="1499094649703366807",
+    )
+
+    assert result["final_response"] == "done"
+    trace_events = [*adapter.traces_sent, *adapter.traces_edited]
+    assert trace_events
+    preview = trace_events[-1]["tools"][-1].preview
+    assert preview.endswith("...")
+    assert len(preview) <= 40
+
+
+@pytest.mark.asyncio
+async def test_run_agent_discord_trace_drops_tool_updates_after_generation_invalidation(monkeypatch, tmp_path):
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"show_reasoning": True, "tool_progress": "all"}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = DelayedProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal tool metadata
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="dm-trace-stale",
+        chat_type="dm",
+        thread_id=None,
+    )
+    session_key = "agent:main:discord:dm:dm-trace-stale"
+    runner._session_run_generation[session_key] = 1
+
+    original_send_trace = adapter.send_trace
+    invalidated = {"done": False}
+
+    async def send_trace_and_invalidate(state, *, metadata=None):
+        result = await original_send_trace(state, metadata=metadata)
+        if state.tools and state.tools[-1].preview == "first command" and not invalidated["done"]:
+            invalidated["done"] = True
+            runner._invalidate_session_run_generation(session_key, reason="test_stop")
+        return result
+
+    adapter.send_trace = send_trace_and_invalidate
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-discord-trace-stale",
+        session_key=session_key,
+        run_generation=1,
+    )
+
+    assert result["final_response"] == "done"
+    trace_events = [*adapter.traces_sent, *adapter.traces_edited]
+    assert trace_events
+    all_previews = [tool.preview for event in trace_events for tool in event["tools"]]
+    assert "first command" in all_previews
+    assert "second command" not in all_previews
+
+
+@pytest.mark.asyncio
+async def test_run_agent_discord_trace_drops_updates_after_interrupt(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        InterruptingTraceAgent,
+        session_id="sess-discord-trace-interrupted",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "all"}},
+        platform=Platform.DISCORD,
+        chat_id="1479509172243664999",
+        chat_type="group",
+        thread_id="1499094649703366807",
+    )
+
+    assert result["final_response"] == "done"
+    trace_events = [*adapter.traces_sent, *adapter.traces_edited]
+    assert trace_events == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_passes_trace_is_active_and_drops_queued_flush_after_invalidation(monkeypatch, tmp_path):
+    import threading
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"show_reasoning": True, "tool_progress": "all"}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = BlockingToolAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal metadata
+
+    class FakeDiscordTraceSink:
+        instances = []
+        gate = None
+
+        def __init__(self, adapter, *, chat_id, metadata=None, is_active=None, **kwargs):
+            self.adapter = adapter
+            self.chat_id = chat_id
+            self.metadata = metadata
+            self.is_active_callback = is_active
+            self.tool_events = []
+            self.finish_calls = 0
+            FakeDiscordTraceSink.instances.append(self)
+
+        def on_tool_event(self, event_type, tool_name=None, preview=None, args=None, **kwargs):
+            self.tool_events.append((event_type, tool_name, preview))
+
+        def on_reasoning_delta(self, text):
+            return None
+
+        async def flush(self, *, force=False):
+            if FakeDiscordTraceSink.gate is not None:
+                await FakeDiscordTraceSink.gate.wait()
+            if self.is_active_callback is not None and not self.is_active_callback():
+                return None
+            self.adapter.traces_sent.append({"queued": True, "force": force})
+            return SendResult(success=True, message_id="trace-queued")
+
+        async def finish(self):
+            self.finish_calls += 1
+            if self.is_active_callback is not None and not self.is_active_callback():
+                return None
+            self.adapter.traces_edited.append({"finish": True})
+            return SendResult(success=True, message_id="trace-queued")
+
+    gateway_run = importlib.import_module("gateway.run")
+    fake_trace_module = types.ModuleType("gateway.local.discord_trace")
+    fake_trace_module.DiscordTraceSink = FakeDiscordTraceSink
+    monkeypatch.setitem(sys.modules, "gateway.local.discord_trace", fake_trace_module)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    BlockingToolAgent.started = threading.Event()
+    BlockingToolAgent.resume = threading.Event()
+    FakeDiscordTraceSink.instances = []
+    FakeDiscordTraceSink.gate = asyncio.Event()
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="dm-trace-queued",
+        chat_type="dm",
+        thread_id=None,
+    )
+    session_key = "agent:main:discord:dm:dm-trace-queued"
+    runner._session_run_generation[session_key] = 1
+
+    run_task = asyncio.create_task(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-discord-trace-queued",
+            session_key=session_key,
+            run_generation=1,
+        )
+    )
+
+    await asyncio.to_thread(BlockingToolAgent.started.wait, 5)
+    assert FakeDiscordTraceSink.instances
+    sink = FakeDiscordTraceSink.instances[0]
+    assert callable(sink.is_active_callback)
+
+    runner._invalidate_session_run_generation(session_key, reason="test_stop")
+    FakeDiscordTraceSink.gate.set()
+    BlockingToolAgent.resume.set()
+
+    result = await run_task
+
+    assert result["final_response"] == "done"
+    assert adapter.traces_sent == []
+    assert adapter.traces_edited == []
+
+
+@pytest.mark.asyncio
 async def test_run_agent_suppresses_streamed_reasoning_when_disabled(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -813,6 +1160,25 @@ async def test_run_agent_suppresses_streamed_reasoning_when_disabled(monkeypatch
 
     assert result["final_response"] == "done"
     assert not any("Planning the lookup" in call["content"] for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_final_response_does_not_prepend_last_reasoning(monkeypatch, tmp_path):
+    ReasoningSummaryAgent.chunks = []
+    ReasoningSummaryAgent.last_reasoning = "This should stay out of the final answer."
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-reasoning-final-clean",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
+    )
+    ReasoningSummaryAgent.last_reasoning = None
+
+    assert result["final_response"] == "done"
+    assert not result["final_response"].startswith("💭")
+    assert result.get("last_reasoning") == "This should stay out of the final answer."
+    assert not any("This should stay out" in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio
