@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+try:  # pragma: no cover - exercised via monkeypatch in tests and runtime import.
+    import discord
+except Exception:  # pragma: no cover - discord.py may be unavailable in some test envs.
+    discord = None
+
 IS_COMPONENTS_V2 = 1 << 15
 TYPE_ACTION_ROW = 1
 TYPE_TEXT_DISPLAY = 10
@@ -94,19 +99,13 @@ def _render_tools_markdown(
     return "\n".join(rendered)
 
 
-def build_trace_components_payload(
+def _trace_component_blocks(
     state: Any,
     *,
-    accent_color: int = TRACE_ACCENT_COLOR,
     reasoning_limit: int = DEFAULT_REASONING_LIMIT,
     tool_limit: int = DEFAULT_TOOL_LIMIT,
     tool_preview_limit: int = DEFAULT_TOOL_PREVIEW_LIMIT,
-) -> dict[str, Any]:
-    """Build a Discord Components V2 payload for a trace state.
-
-    The returned payload is intended for raw Discord message create/edit calls.
-    Components V2 messages must not include top-level content or embeds.
-    """
+) -> list[dict[str, Any]]:
     reasoning = _truncate(getattr(state, "reasoning_text", ""), reasoning_limit)
     tools_md = _render_tools_markdown(
         state,
@@ -123,9 +122,64 @@ def build_trace_components_payload(
         children.append(_text_display(f"### 🛠 Tools\n{tools_md}"))
     if not children:
         children.append(_text_display("### Trace\nWaiting for reasoning or tool activity…"))
+    return children[: MAX_COMPONENTS - 1]
 
-    # Reserve one component for the top-level container.
-    children = children[: MAX_COMPONENTS - 1]
+
+def components_v2_layout_supported() -> bool:
+    if discord is None:
+        return False
+    ui = getattr(discord, "ui", None)
+    return all(
+        getattr(ui, name, None) is not None
+        for name in ("LayoutView", "TextDisplay", "Container", "Separator")
+    )
+
+
+def build_trace_layout_view(
+    state: Any,
+    *,
+    accent_color: int = TRACE_ACCENT_COLOR,
+    reasoning_limit: int = DEFAULT_REASONING_LIMIT,
+    tool_limit: int = DEFAULT_TOOL_LIMIT,
+    tool_preview_limit: int = DEFAULT_TOOL_PREVIEW_LIMIT,
+) -> Any:
+    """Build a discord.py LayoutView for a trace state."""
+    if not components_v2_layout_supported():
+        raise RuntimeError("LayoutView/TextDisplay/Container/Separator unavailable")
+
+    children = _trace_component_blocks(
+        state,
+        reasoning_limit=reasoning_limit,
+        tool_limit=tool_limit,
+        tool_preview_limit=tool_preview_limit,
+    )
+
+    view = discord.ui.LayoutView(timeout=None)
+    container = discord.ui.Container(accent_color=int(accent_color) & 0xFFFFFF)
+    for child in children:
+        if child["type"] == TYPE_TEXT_DISPLAY:
+            container.add_item(discord.ui.TextDisplay(child["content"]))
+        elif child["type"] == TYPE_SEPARATOR:
+            container.add_item(discord.ui.Separator(spacing=child.get("spacing", 1)))
+    view.add_item(container)
+    return view
+
+
+def build_trace_components_payload(
+    state: Any,
+    *,
+    accent_color: int = TRACE_ACCENT_COLOR,
+    reasoning_limit: int = DEFAULT_REASONING_LIMIT,
+    tool_limit: int = DEFAULT_TOOL_LIMIT,
+    tool_preview_limit: int = DEFAULT_TOOL_PREVIEW_LIMIT,
+) -> dict[str, Any]:
+    """Build a raw Discord Components V2 payload for a trace state."""
+    children = _trace_component_blocks(
+        state,
+        reasoning_limit=reasoning_limit,
+        tool_limit=tool_limit,
+        tool_preview_limit=tool_preview_limit,
+    )
     return {
         "flags": IS_COMPONENTS_V2,
         "components": [
