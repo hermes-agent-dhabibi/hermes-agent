@@ -6,8 +6,15 @@ import asyncio
 
 import pytest
 
+from gateway.local.discord_components import build_trace_components_payload
 from gateway.local.discord_trace import DiscordTraceSink, dedupe_reasoning_replay
 from gateway.platforms.base import SendResult
+
+
+@pytest.fixture(autouse=True)
+def _ensure_redaction_enabled(monkeypatch):
+    monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
 
 class FakeTraceAdapter:
@@ -174,6 +181,29 @@ def test_trace_sink_suppresses_encrypted_reasoning():
     sink.flush_reasoning_buffer(force=True)
 
     assert sink.state.reasoning_text == ""
+
+
+def test_trace_sink_redacts_reasoning_and_tool_preview_before_storage_and_render():
+    sink = DiscordTraceSink(FakeTraceAdapter(), chat_id="c1", min_reasoning_chars=1, min_interval=0)
+    reasoning_secret = "sk-proj-abc123def456ghi7890"
+    preview_secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+
+    sink.on_reasoning_delta(f"Authorization: Bearer {reasoning_secret}")
+    sink.on_tool_event("tool.started", "read_file", f"token: {preview_secret}")
+    sink.flush_reasoning_buffer(force=True)
+
+    payload = build_trace_components_payload(sink.state)
+    fallback = sink.state.fallback_text()
+    payload_text = str(payload)
+
+    assert reasoning_secret not in sink.state.reasoning_text
+    assert preview_secret not in sink.state.tools[0].preview
+    assert reasoning_secret not in payload_text
+    assert preview_secret not in payload_text
+    assert reasoning_secret not in fallback
+    assert preview_secret not in fallback
+    assert "Authorization: Bearer ***" in sink.state.reasoning_text
+    assert "ghp_ab" in sink.state.tools[0].preview
 
 
 def test_trace_sink_dedupes_repeated_tool_events():
