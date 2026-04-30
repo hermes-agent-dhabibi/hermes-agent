@@ -9920,46 +9920,11 @@ class GatewayRunner:
             _reasoning_stream_displayed = [False]
             _REASONING_MIN_CHARS = 240
             _REASONING_MIN_INTERVAL = 2.5
-            _REASONING_MIN_POST_HEADING_CHARS = 80
-
-            def _dedupe_reasoning_text(text: str) -> str:
-                """Collapse replayed reasoning summaries in a single buffered chunk."""
-                try:
-                    heading_match = re.search(r"(?m)^\*\*([^\n*][^\n]*?)\*\*\s*\n\n", text)
-                    if not heading_match:
-                        return text
-                    heading_block = heading_match.group(0)
-                    second_idx = text.find(heading_block, heading_match.end())
-                    if second_idx == -1:
-                        return text
-                    first_body = text[heading_match.end():second_idx].strip()
-                    second_body = text[second_idx + len(heading_block):].strip()
-                    if first_body and second_body:
-                        if second_body.startswith(first_body):
-                            return f"{heading_block}{second_body}".strip()
-                        if first_body.startswith(second_body):
-                            return f"{heading_block}{first_body}".strip()
-                    if second_body:
-                        return f"{heading_block}{second_body}".strip()
-                except Exception:
-                    pass
-                return text
-
-            def _has_paragraph_boundary_with_body(text: str) -> bool:
-                marker = "\r\n\r\n" if "\r\n\r\n" in text else "\n\n"
-                idx = text.rfind(marker)
-                if idx == -1:
-                    return False
-                after = text[idx + len(marker):].strip()
-                # Avoid flushing a markdown heading plus one or two body tokens
-                # (e.g. "**Inspecting links**\n\nI"), which creates ugly
-                # one-word thinking bubbles before the useful body arrives.
-                return len(after) >= _REASONING_MIN_POST_HEADING_CHARS
 
             def _flush_reasoning_buffer(*, force: bool = False) -> None:
                 if not _run_still_current() or not _reasoning_buffer:
                     return
-                text = _dedupe_reasoning_text("".join(_reasoning_buffer).strip())
+                text = "".join(_reasoning_buffer).strip()
                 if not text:
                     _reasoning_buffer.clear()
                     return
@@ -9983,7 +9948,8 @@ class GatewayRunner:
                     return
                 _reasoning_buffer.append(chunk)
                 buffered = "".join(_reasoning_buffer)
-                _flush_reasoning_buffer(force=_has_paragraph_boundary_with_body(buffered))
+                force = "\n\n" in buffered or buffered.endswith(("\n\n", "\r\n\r\n"))
+                _flush_reasoning_buffer(force=force)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
