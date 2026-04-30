@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Optional
 
-from gateway.local.discord_components import build_trace_components_payload
+from gateway.local.discord_components import (
+    build_trace_layout_view,
+    render_trace_fallback_text,
+)
 from gateway.platforms.base import SendResult
 from gateway.platforms.discord import DiscordAdapter
 
@@ -20,6 +24,10 @@ class LocalDiscordAdapter(DiscordAdapter):
 
     supports_trace_components = True
 
+    def __init__(self, config):
+        super().__init__(config)
+        self._trace_components_v2_disabled = False
+
     def _trace_target_chat_id(
         self,
         trace_state: Any,
@@ -29,20 +37,69 @@ class LocalDiscordAdapter(DiscordAdapter):
             return str(metadata["thread_id"])
         return str(getattr(trace_state, "chat_id", "") or "")
 
+    def _is_components_v2_structural_error(self, error: str | None) -> bool:
+        text = str(error or "").lower()
+        if not text:
+            return False
+        structural_markers = (
+            "layoutview",
+            "textdisplay",
+            "container",
+            "separator",
+            "view",
+            "unexpected keyword argument 'flags'",
+            "unexpected keyword argument 'components'",
+            "unsupported component",
+            "unsupported layout",
+            "invalid form body",
+            "not a valid",
+            "must be an instance of view",
+            "missing required positional argument",
+            "takes 1 positional argument",
+        )
+        return any(marker in text for marker in structural_markers)
+
+    def _latch_components_v2_fallback(self, result: SendResult) -> None:
+        if not result.success and self._is_components_v2_structural_error(result.error):
+            self._trace_components_v2_disabled = True
+
+    def _trace_fallback_text(self, trace_state: Any, default: str) -> str:
+        content = getattr(trace_state, "fallback_text", None)
+        if callable(content):
+            content = content()
+        if not isinstance(content, str) or not content.strip():
+            content = render_trace_fallback_text(trace_state)
+        if not isinstance(content, str) or not content.strip():
+            content = default
+        return content
+
+    async def _resolve_channel(self, chat_id: str) -> Any:
+        if not self._client:
+            return None
+        channel = self._client.get_channel(int(chat_id))
+        if channel:
+            return channel
+        fetch_channel = getattr(self._client, "fetch_channel", None)
+        if fetch_channel is None:
+            return None
+        result = fetch_channel(int(chat_id))
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
     async def _send_components_v2(
         self,
         chat_id: str,
-        payload: dict[str, Any],
+        trace_state: Any,
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            channel = await self._resolve_channel(chat_id)
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
-            msg = await channel.send(**payload)
+            view = build_trace_layout_view(trace_state)
+            msg = await channel.send(content=None, reference=None, view=view)
             return SendResult(success=True, message_id=str(msg.id), raw_response={"components_v2": True})
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -51,18 +108,17 @@ class LocalDiscordAdapter(DiscordAdapter):
         self,
         chat_id: str,
         message_id: str,
-        payload: dict[str, Any],
+        trace_state: Any,
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            channel = await self._resolve_channel(chat_id)
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
             partial = channel.get_partial_message(int(message_id))
-            await partial.edit(**payload)
+            view = build_trace_layout_view(trace_state)
+            await partial.edit(content=None, view=view)
             return SendResult(success=True, message_id=message_id, raw_response={"components_v2": True})
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -77,17 +133,12 @@ class LocalDiscordAdapter(DiscordAdapter):
         chat_id = self._trace_target_chat_id(trace_state, metadata)
         if not chat_id:
             return SendResult(success=False, error="trace_state missing chat_id")
-        payload = build_trace_components_payload(trace_state)
-        result = await self._send_components_v2(chat_id, payload)
-        if result.success:
-            return result
-        # Components V2 can fail if the library/API shape changes. Fall back to
-        # a compact markdown trace instead of losing the user's live feedback.
-        content = getattr(trace_state, "fallback_text", None)
-        if callable(content):
-            content = content()
-        if not isinstance(content, str) or not content.strip():
-            content = "💭 Trace started"
+        if not self._trace_components_v2_disabled:
+            result = await self._send_components_v2(chat_id, trace_state)
+            if result.success:
+                return result
+            self._latch_components_v2_fallback(result)
+        content = self._trace_fallback_text(trace_state, "💭 Trace started")
         return await self.send(chat_id, content, metadata=None)
 
     async def edit_trace(
@@ -101,13 +152,10 @@ class LocalDiscordAdapter(DiscordAdapter):
         chat_id = self._trace_target_chat_id(trace_state, metadata)
         if not chat_id:
             return SendResult(success=False, error="trace_state missing chat_id")
-        payload = build_trace_components_payload(trace_state)
-        result = await self._edit_components_v2(chat_id, message_id, payload)
-        if result.success:
-            return result
-        content = getattr(trace_state, "fallback_text", None)
-        if callable(content):
-            content = content()
-        if not isinstance(content, str) or not content.strip():
-            content = "💭 Trace updated"
+        if not self._trace_components_v2_disabled:
+            result = await self._edit_components_v2(chat_id, message_id, trace_state)
+            if result.success:
+                return result
+            self._latch_components_v2_fallback(result)
+        content = self._trace_fallback_text(trace_state, "💭 Trace updated")
         return await self.edit_message(chat_id, message_id, content)

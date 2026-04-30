@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
+import gateway.local.discord_components as discord_components
 from gateway.local.discord_components import (
     IS_COMPONENTS_V2,
+    TRACE_ACCENT_COLOR,
     TYPE_CONTAINER,
     TYPE_SEPARATOR,
     TYPE_TEXT_DISPLAY,
     DiscordTraceRenderState,
     ToolTraceItem,
     build_trace_components_payload,
+    build_trace_layout_view,
     render_trace_fallback_text,
 )
 
@@ -24,6 +31,7 @@ def _flatten_components(payload):
 
     walk(payload.get("components", []))
     return out
+
 
 
 def test_trace_payload_uses_components_v2_without_content_or_embeds():
@@ -44,6 +52,7 @@ def test_trace_payload_uses_components_v2_without_content_or_embeds():
     assert len(components) <= 40
 
 
+
 def test_trace_payload_suppresses_encrypted_reasoning():
     state = DiscordTraceRenderState(
         reasoning_text="reasoning.encrypted_content: secret blob",
@@ -55,6 +64,7 @@ def test_trace_payload_suppresses_encrypted_reasoning():
 
     assert "encrypted_content" not in rendered
     assert "Waiting for reasoning" in rendered
+
 
 
 def test_trace_payload_caps_long_reasoning_and_tool_list():
@@ -76,6 +86,80 @@ def test_trace_payload_caps_long_reasoning_and_tool_list():
     assert "tool_15" in rendered
     assert "tool_19" in rendered
     assert len(_flatten_components(payload)) <= 40
+
+
+
+def test_trace_layout_view_uses_layout_components(monkeypatch):
+    class FakeLayoutView:
+        def __init__(self, *, timeout=180.0):
+            self.timeout = timeout
+            self.children = []
+
+        def add_item(self, item):
+            self.children.append(item)
+            return self
+
+    class FakeContainer:
+        def __init__(self, *children, accent_colour=None, accent_color=None, spoiler=False, id=None):
+            self.children = list(children)
+            self.accent_color = accent_color if accent_color is not None else accent_colour
+            self.spoiler = spoiler
+            self.id = id
+
+        def add_item(self, item):
+            self.children.append(item)
+            return self
+
+    class FakeTextDisplay:
+        def __init__(self, content, *, id=None):
+            self.content = content
+            self.id = id
+
+    class FakeSeparator:
+        def __init__(self, *, visible=True, spacing=1, id=None):
+            self.visible = visible
+            self.spacing = spacing
+            self.id = id
+
+    fake_discord = SimpleNamespace(
+        ui=SimpleNamespace(
+            LayoutView=FakeLayoutView,
+            Container=FakeContainer,
+            TextDisplay=FakeTextDisplay,
+            Separator=FakeSeparator,
+        )
+    )
+    monkeypatch.setattr(discord_components, "discord", fake_discord)
+
+    state = DiscordTraceRenderState(
+        reasoning_text="Thinking through the edit.",
+        tools=[ToolTraceItem(name="read_file", preview="gateway/local/discord_adapter.py")],
+    )
+
+    view = build_trace_layout_view(state)
+
+    assert isinstance(view, FakeLayoutView)
+    assert view.timeout is None
+    assert len(view.children) == 1
+    container = view.children[0]
+    assert isinstance(container, FakeContainer)
+    assert container.accent_color == TRACE_ACCENT_COLOR
+    assert [type(child) for child in container.children] == [
+        FakeTextDisplay,
+        FakeSeparator,
+        FakeTextDisplay,
+    ]
+    assert container.children[0].content.startswith("### 💭 Thinking")
+    assert container.children[2].content.startswith("### 🛠 Tools")
+
+
+
+def test_trace_layout_view_requires_supported_discord_ui(monkeypatch):
+    monkeypatch.setattr(discord_components, "discord", None)
+
+    with pytest.raises(RuntimeError, match="LayoutView"):
+        build_trace_layout_view(DiscordTraceRenderState(reasoning_text="hello"))
+
 
 
 def test_trace_fallback_text_is_plain_markdown():
