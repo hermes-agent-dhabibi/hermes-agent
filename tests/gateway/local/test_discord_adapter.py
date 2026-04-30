@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,28 @@ from gateway.run import GatewayRunner
 def test_local_discord_adapter_subclasses_upstream_adapter():
     assert issubclass(LocalDiscordAdapter, DiscordAdapter)
 
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        ("LayoutView/TextDisplay/Container/Separator unavailable", True),
+        ("discord.ui has no attribute 'LayoutView'", True),
+        ("discord.ui has no attribute 'TextDisplay'", True),
+        ("Container unsupported by this discord.py build", True),
+        ("Separator unsupported by this discord.py build", True),
+        ("send() got an unexpected keyword argument 'view'", True),
+        ("unsupported layout view payload", True),
+        ("unsupported component type 17", True),
+        ("Invalid Form Body", False),
+        ("foo is not a valid choice", False),
+        ("View timed out", False),
+        ("ReadTimeout while waiting for Discord", False),
+    ],
+)
+def test_is_components_v2_structural_error_is_narrow(error, expected):
+    adapter = LocalDiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+
+    assert adapter._is_components_v2_structural_error(error) is expected
 
 
 def test_gateway_uses_local_discord_adapter_for_discord(monkeypatch):
@@ -138,7 +161,11 @@ async def test_local_discord_adapter_trace_text_fallback(monkeypatch):
     calls = []
 
     async def fake_send_components(chat_id, trace_state):
-        return SendResult(success=False, error="components unsupported")
+        return SendResult(
+            success=False,
+            error="components unsupported",
+            raw_response={"components_v2": True, "failure_kind": "structural"},
+        )
 
     async def fake_send(chat_id, content, reply_to=None, metadata=None):
         calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
@@ -157,14 +184,52 @@ async def test_local_discord_adapter_trace_text_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_discord_adapter_send_trace_latches_after_structural_failure(monkeypatch):
+async def test_local_discord_adapter_send_trace_returns_transient_failure_without_fallback(monkeypatch):
+    adapter = LocalDiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    component_calls = []
+    fallback_calls = []
+    state = SimpleNamespace(chat_id="c1", fallback_text=lambda: "ignored")
+
+    async def fake_send_components(chat_id, trace_state):
+        component_calls.append({"chat_id": chat_id, "trace_state": trace_state})
+        return SendResult(
+            success=False,
+            error="ConnectionError: reset by peer",
+            retryable=True,
+            raw_response={"components_v2": True, "failure_kind": "transient"},
+        )
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        fallback_calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return SendResult(success=True, message_id="fallback")
+
+    monkeypatch.setattr(adapter, "_send_components_v2", fake_send_components)
+    monkeypatch.setattr(adapter, "send", fake_send)
+
+    result = await adapter.send_trace(state)
+
+    assert result.success is False
+    assert result.retryable is True
+    assert result.error == "ConnectionError: reset by peer"
+    assert result.raw_response == {"components_v2": True, "failure_kind": "transient"}
+    assert component_calls == [{"chat_id": "c1", "trace_state": state}]
+    assert fallback_calls == []
+    assert adapter._trace_components_v2_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_local_discord_adapter_send_trace_latches_after_structural_failure(monkeypatch, caplog):
     adapter = LocalDiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
     component_calls = []
     fallback_calls = []
 
     async def fake_send_components(chat_id, trace_state):
         component_calls.append({"chat_id": chat_id, "trace_state": trace_state})
-        return SendResult(success=False, error="LayoutView unsupported")
+        return SendResult(
+            success=False,
+            error="LayoutView unsupported",
+            raw_response={"components_v2": True, "failure_kind": "structural"},
+        )
 
     async def fake_send(chat_id, content, reply_to=None, metadata=None):
         fallback_calls.append({"chat_id": chat_id, "content": content})
@@ -176,27 +241,72 @@ async def test_local_discord_adapter_send_trace_latches_after_structural_failure
     first_state = SimpleNamespace(chat_id="c1", fallback_text=lambda: "first")
     second_state = SimpleNamespace(chat_id="c1", fallback_text=lambda: "second")
 
-    first = await adapter.send_trace(first_state)
-    second = await adapter.send_trace(second_state)
+    with caplog.at_level(logging.WARNING, logger="gateway.local.discord_adapter"):
+        first = await adapter.send_trace(first_state)
+        second = await adapter.send_trace(second_state)
 
     assert first.success is True
     assert second.success is True
+    assert adapter._trace_components_v2_disabled is True
     assert len(component_calls) == 1
     assert fallback_calls == [
         {"chat_id": "c1", "content": "first"},
         {"chat_id": "c1", "content": "second"},
     ]
+    warnings = [
+        record.message
+        for record in caplog.records
+        if "trace components" in record.message.lower() and "plain text" in record.message.lower()
+    ]
+    assert len(warnings) == 1
 
 
 @pytest.mark.asyncio
-async def test_local_discord_adapter_edit_trace_latches_after_structural_failure(monkeypatch):
+async def test_local_discord_adapter_edit_trace_returns_ambiguous_failure_without_fallback(monkeypatch):
+    adapter = LocalDiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    component_calls = []
+    fallback_calls = []
+    state = SimpleNamespace(chat_id="c1", fallback_text=lambda: "ignored")
+
+    async def fake_edit_components(chat_id, message_id, trace_state):
+        component_calls.append({"chat_id": chat_id, "message_id": message_id, "trace_state": trace_state})
+        return SendResult(
+            success=False,
+            error="ReadTimeout while waiting for Discord",
+            raw_response={"components_v2": True, "failure_kind": "ambiguous"},
+        )
+
+    async def fake_edit_message(chat_id, message_id, content, finalize=False):
+        fallback_calls.append({"chat_id": chat_id, "message_id": message_id, "content": content, "finalize": finalize})
+        return SendResult(success=True, message_id=message_id)
+
+    monkeypatch.setattr(adapter, "_edit_components_v2", fake_edit_components)
+    monkeypatch.setattr(adapter, "edit_message", fake_edit_message)
+
+    result = await adapter.edit_trace("m1", state)
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == "ReadTimeout while waiting for Discord"
+    assert result.raw_response == {"components_v2": True, "failure_kind": "ambiguous"}
+    assert component_calls == [{"chat_id": "c1", "message_id": "m1", "trace_state": state}]
+    assert fallback_calls == []
+    assert adapter._trace_components_v2_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_local_discord_adapter_edit_trace_latches_after_structural_failure(monkeypatch, caplog):
     adapter = LocalDiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
     component_calls = []
     fallback_calls = []
 
     async def fake_edit_components(chat_id, message_id, trace_state):
         component_calls.append({"chat_id": chat_id, "message_id": message_id, "trace_state": trace_state})
-        return SendResult(success=False, error="TextDisplay unsupported")
+        return SendResult(
+            success=False,
+            error="TextDisplay unsupported",
+            raw_response={"components_v2": True, "failure_kind": "structural"},
+        )
 
     async def fake_edit_message(chat_id, message_id, content, finalize=False):
         fallback_calls.append({"chat_id": chat_id, "message_id": message_id, "content": content, "finalize": finalize})
@@ -208,13 +318,21 @@ async def test_local_discord_adapter_edit_trace_latches_after_structural_failure
     first_state = SimpleNamespace(chat_id="c1", fallback_text=lambda: "first edit")
     second_state = SimpleNamespace(chat_id="c1", fallback_text=lambda: "second edit")
 
-    first = await adapter.edit_trace("m1", first_state)
-    second = await adapter.edit_trace("m1", second_state)
+    with caplog.at_level(logging.WARNING, logger="gateway.local.discord_adapter"):
+        first = await adapter.edit_trace("m1", first_state)
+        second = await adapter.edit_trace("m1", second_state)
 
     assert first.success is True
     assert second.success is True
+    assert adapter._trace_components_v2_disabled is True
     assert len(component_calls) == 1
     assert fallback_calls == [
         {"chat_id": "c1", "message_id": "m1", "content": "first edit", "finalize": False},
         {"chat_id": "c1", "message_id": "m1", "content": "second edit", "finalize": False},
     ]
+    warnings = [
+        record.message
+        for record in caplog.records
+        if "trace components" in record.message.lower() and "plain text" in record.message.lower()
+    ]
+    assert len(warnings) == 1
