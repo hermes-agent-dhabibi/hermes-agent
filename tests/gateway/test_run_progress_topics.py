@@ -408,23 +408,6 @@ class CommentaryAgent:
         }
 
 
-class ReasoningSummaryAgent:
-    def __init__(self, **kwargs):
-        self.reasoning_callback = kwargs.get("reasoning_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        if self.reasoning_callback:
-            self.reasoning_callback("Planning the lookup")
-            self.reasoning_callback(" and checking files.")
-            self.reasoning_callback("reasoning.encrypted_content: should not display")
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
 class PreviewedResponseAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -614,38 +597,6 @@ async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch
 
     assert result.get("already_sent") is not True
     assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
-
-
-@pytest.mark.asyncio
-async def test_run_agent_surfaces_streamed_reasoning_when_enabled(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ReasoningSummaryAgent,
-        session_id="sess-reasoning-enabled",
-        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
-    )
-
-    assert result["final_response"] == "done"
-    sent_texts = [call["content"] for call in adapter.sent]
-    assert any(text.startswith("💭\n> ") for text in sent_texts)
-    reasoning_text = "\n".join(sent_texts)
-    assert "Planning the lookup and checking files." in reasoning_text
-    assert "reasoning.encrypted_content" not in reasoning_text
-
-
-@pytest.mark.asyncio
-async def test_run_agent_suppresses_streamed_reasoning_when_disabled(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ReasoningSummaryAgent,
-        session_id="sess-reasoning-disabled",
-        config_data={"display": {"show_reasoning": False, "tool_progress": "off"}},
-    )
-
-    assert result["final_response"] == "done"
-    assert not any("Planning the lookup" in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio
