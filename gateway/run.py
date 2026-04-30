@@ -9917,9 +9917,8 @@ class GatewayRunner:
 
             _reasoning_buffer: list[str] = []
             _reasoning_last_emit = [time.monotonic()]
-            _reasoning_stream_displayed = [False]
-            _REASONING_MIN_CHARS = 240
-            _REASONING_MIN_INTERVAL = 2.5
+            _REASONING_MIN_CHARS = 80
+            _REASONING_MIN_INTERVAL = 1.0
 
             def _flush_reasoning_buffer(*, force: bool = False) -> None:
                 if not _run_still_current() or not _reasoning_buffer:
@@ -9931,15 +9930,12 @@ class GatewayRunner:
                 now = time.monotonic()
                 if (
                     not force
-                    and (
-                        len(text) < _REASONING_MIN_CHARS
-                        or now - _reasoning_last_emit[0] < _REASONING_MIN_INTERVAL
-                    )
+                    and len(text) < _REASONING_MIN_CHARS
+                    and now - _reasoning_last_emit[0] < _REASONING_MIN_INTERVAL
                 ):
                     return
                 _reasoning_buffer.clear()
                 _reasoning_last_emit[0] = now
-                _reasoning_stream_displayed[0] = True
                 _send_thinking_text(text)
 
             def _reasoning_cb(text: str) -> None:
@@ -9947,9 +9943,7 @@ class GatewayRunner:
                 if not chunk.strip() or "reasoning.encrypted_content" in chunk:
                     return
                 _reasoning_buffer.append(chunk)
-                buffered = "".join(_reasoning_buffer)
-                force = "\n\n" in buffered or buffered.endswith(("\n\n", "\r\n\r\n"))
-                _flush_reasoning_buffer(force=force)
+                _flush_reasoning_buffer(force=chunk.endswith(("\n", ".", "!", "?")))
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
@@ -10439,13 +10433,9 @@ class GatewayRunner:
                 except Exception:
                     pass
 
-            _returned_last_reasoning = result.get("last_reasoning")
-            if _reasoning_stream_displayed[0]:
-                _returned_last_reasoning = None
-
             return {
                 "final_response": final_response,
-                "last_reasoning": _returned_last_reasoning,
+                "last_reasoning": result.get("last_reasoning"),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
                 "tools": tools_holder[0] or [],

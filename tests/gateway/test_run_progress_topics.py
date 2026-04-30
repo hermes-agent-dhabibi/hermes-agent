@@ -409,29 +409,20 @@ class CommentaryAgent:
 
 
 class ReasoningSummaryAgent:
-    chunks = [
-        "Planning the lookup",
-        " and checking files.",
-        "reasoning.encrypted_content: should not display",
-    ]
-    last_reasoning = None
-
     def __init__(self, **kwargs):
         self.reasoning_callback = kwargs.get("reasoning_callback")
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         if self.reasoning_callback:
-            for chunk in type(self).chunks:
-                self.reasoning_callback(chunk)
-        result = {
+            self.reasoning_callback("Planning the lookup")
+            self.reasoning_callback(" and checking files.")
+            self.reasoning_callback("reasoning.encrypted_content: should not display")
+        return {
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
         }
-        if type(self).last_reasoning is not None:
-            result["last_reasoning"] = type(self).last_reasoning
-        return result
 
 
 class PreviewedResponseAgent:
@@ -627,12 +618,6 @@ async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch
 
 @pytest.mark.asyncio
 async def test_run_agent_surfaces_streamed_reasoning_when_enabled(monkeypatch, tmp_path):
-    ReasoningSummaryAgent.chunks = [
-        "Planning the lookup",
-        " and checking files.",
-        "reasoning.encrypted_content: should not display",
-    ]
-    ReasoningSummaryAgent.last_reasoning = None
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
@@ -643,83 +628,10 @@ async def test_run_agent_surfaces_streamed_reasoning_when_enabled(monkeypatch, t
 
     assert result["final_response"] == "done"
     sent_texts = [call["content"] for call in adapter.sent]
-    assert len([text for text in sent_texts if text.startswith("💭\n> ")]) == 1
+    assert any(text.startswith("💭\n> ") for text in sent_texts)
     reasoning_text = "\n".join(sent_texts)
     assert "Planning the lookup and checking files." in reasoning_text
     assert "reasoning.encrypted_content" not in reasoning_text
-
-
-@pytest.mark.asyncio
-async def test_run_agent_reasoning_punctuation_chunk_does_not_force_emit(monkeypatch, tmp_path):
-    ReasoningSummaryAgent.chunks = ["I ", "need ", "to", ".", " think"]
-    ReasoningSummaryAgent.last_reasoning = None
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ReasoningSummaryAgent,
-        session_id="sess-reasoning-punctuation",
-        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
-    )
-
-    assert result["final_response"] == "done"
-    sent_texts = [call["content"] for call in adapter.sent if call["content"].startswith("💭")]
-    assert sent_texts == ["💭\n> I need to. think"]
-
-
-@pytest.mark.asyncio
-async def test_run_agent_reasoning_threshold_emits_one_batched_message(monkeypatch, tmp_path):
-    ReasoningSummaryAgent.chunks = ["word " * 30, "more " * 25]
-    ReasoningSummaryAgent.last_reasoning = None
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ReasoningSummaryAgent,
-        session_id="sess-reasoning-threshold",
-        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
-    )
-
-    assert result["final_response"] == "done"
-    sent_texts = [call["content"] for call in adapter.sent if call["content"].startswith("💭")]
-    assert len(sent_texts) == 1
-    assert "word word" in sent_texts[0]
-    assert "more more" in sent_texts[0]
-
-
-@pytest.mark.asyncio
-async def test_run_agent_reasoning_final_flush_emits_remaining_text(monkeypatch, tmp_path):
-    ReasoningSummaryAgent.chunks = ["short trailing thought"]
-    ReasoningSummaryAgent.last_reasoning = None
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ReasoningSummaryAgent,
-        session_id="sess-reasoning-final-flush",
-        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
-    )
-
-    assert result["final_response"] == "done"
-    assert [call["content"] for call in adapter.sent if call["content"].startswith("💭")] == [
-        "💭\n> short trailing thought"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_run_agent_does_not_duplicate_final_last_reasoning(monkeypatch, tmp_path):
-    ReasoningSummaryAgent.chunks = ["streamed summary"]
-    ReasoningSummaryAgent.last_reasoning = "streamed summary"
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        ReasoningSummaryAgent,
-        session_id="sess-reasoning-no-duplicate-final",
-        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
-    )
-    ReasoningSummaryAgent.last_reasoning = None
-
-    assert result["final_response"] == "done"
-    sent_texts = [call["content"] for call in adapter.sent if call["content"].startswith("💭")]
-    assert sent_texts == ["💭\n> streamed summary"]
-    assert result.get("last_reasoning") in (None, "")
 
 
 @pytest.mark.asyncio
