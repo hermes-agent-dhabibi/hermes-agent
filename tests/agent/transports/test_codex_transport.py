@@ -100,55 +100,6 @@ class TestCodexBuildKwargs:
         )
         assert "prompt_cache_key" not in kw
 
-    def test_github_responses_default_reasoning_requests_summary(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.5",
-            messages=messages,
-            tools=[],
-            is_github_responses=True,
-            reasoning_config={"effort": "high"},
-        )
-
-        assert kw["reasoning"] == {"effort": "high", "summary": "auto"}
-        assert kw.get("include") != ["reasoning.summary"]
-
-    def test_github_responses_reasoning_extra_overrides_defaults(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.5",
-            messages=messages,
-            tools=[],
-            is_github_responses=True,
-            reasoning_config={"effort": "medium"},
-            github_reasoning_extra={
-                "effort": "high",
-                "summary": "detailed",
-                "custom_future_key": "keep-me",
-            },
-        )
-
-        assert kw["reasoning"] == {
-            "effort": "high",
-            "summary": "detailed",
-            "custom_future_key": "keep-me",
-        }
-        assert kw.get("include") != ["reasoning.summary"]
-
-    def test_github_responses_reasoning_disabled_omits_reasoning(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.5",
-            messages=messages,
-            tools=[],
-            is_github_responses=True,
-            reasoning_config={"enabled": False, "effort": "high"},
-            github_reasoning_extra={"summary": "detailed"},
-        )
-
-        assert "reasoning" not in kw
-        assert kw.get("include") != ["reasoning.summary"]
-
     def test_max_tokens(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

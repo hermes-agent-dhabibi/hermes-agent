@@ -108,14 +108,8 @@ class ResponsesApiTransport(ProviderTransport):
         elif reasoning_enabled:
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
-                if isinstance(github_reasoning, dict):
-                    kwargs["reasoning"] = {
-                        "effort": reasoning_effort,
-                        "summary": "auto",
-                        **github_reasoning,
-                    }
-                else:
-                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                if github_reasoning is not None:
+                    kwargs["reasoning"] = github_reasoning
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = ["reasoning.encrypted_content"]
