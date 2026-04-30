@@ -2816,6 +2816,21 @@ class GatewayRunner:
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
     
+    def _create_discord_adapter(self, config: Any) -> BasePlatformAdapter:
+        """Create this fork's Discord adapter.
+
+        This is the local-layer seam: upstream-shaped gateway code keeps using
+        the generic adapter factory, while Discord resolves to a subclass that
+        owns fork-local UX and trace behavior.
+        """
+        try:
+            from gateway.local.discord_adapter import LocalDiscordAdapter
+            return LocalDiscordAdapter(config)
+        except Exception as exc:
+            logger.warning("Discord: local adapter unavailable; falling back to upstream adapter: %s", exc)
+            from gateway.platforms.discord import DiscordAdapter
+            return DiscordAdapter(config)
+
     def _create_adapter(
         self, 
         platform: Platform, 
@@ -2840,11 +2855,11 @@ class GatewayRunner:
             return TelegramAdapter(config)
         
         elif platform == Platform.DISCORD:
-            from gateway.platforms.discord import DiscordAdapter, check_discord_requirements
+            from gateway.platforms.discord import check_discord_requirements
             if not check_discord_requirements():
                 logger.warning("Discord: discord.py not installed")
                 return None
-            return DiscordAdapter(config)
+            return self._create_discord_adapter(config)
         
         elif platform == Platform.WHATSAPP:
             from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
