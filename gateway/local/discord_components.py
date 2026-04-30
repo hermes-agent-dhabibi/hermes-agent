@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from agent.redact import redact_sensitive_text
+
 try:  # pragma: no cover - exercised via monkeypatch in tests and runtime import.
     import discord
 except Exception:  # pragma: no cover - discord.py may be unavailable in some test envs.
@@ -46,6 +48,7 @@ def _clean_text(text: Any) -> str:
     text = str(text or "")
     if "reasoning.encrypted_content" in text:
         return ""
+    text = redact_sensitive_text(text)
     # Discord markdown tolerates normal newlines; trim pathological whitespace
     # without destroying intentional paragraph breaks.
     return text.replace("\r\n", "\n").strip()

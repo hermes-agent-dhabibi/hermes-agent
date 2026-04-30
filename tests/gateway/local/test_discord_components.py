@@ -21,6 +21,12 @@ from gateway.local.discord_components import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _ensure_redaction_enabled(monkeypatch):
+    monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+
 def _flatten_components(payload):
     out = []
 
@@ -64,6 +70,27 @@ def test_trace_payload_suppresses_encrypted_reasoning():
 
     assert "encrypted_content" not in rendered
     assert "Waiting for reasoning" in rendered
+
+
+
+def test_trace_payload_defensively_redacts_reasoning_and_tool_preview():
+    reasoning_secret = "Authorization: Bearer sk-proj-abc123def456ghi7890"
+    preview_secret = "token: ghp_abcdefghijklmnopqrstuvwxyz123456"
+    state = DiscordTraceRenderState(
+        reasoning_text=reasoning_secret,
+        tools=[ToolTraceItem(name="read_file", preview=preview_secret)],
+    )
+
+    payload = build_trace_components_payload(state)
+    fallback = render_trace_fallback_text(state)
+    rendered = str(payload)
+
+    assert "sk-proj-abc123def456ghi7890" not in rendered
+    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in rendered
+    assert "sk-proj-abc123def456ghi7890" not in fallback
+    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in fallback
+    assert "Authorization: Bearer ***" in rendered
+    assert "ghp_ab" in rendered
 
 
 

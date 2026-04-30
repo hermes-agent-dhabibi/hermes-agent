@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Optional
 
+from agent.redact import redact_sensitive_text
 from gateway.local.discord_components import (
     ToolTraceItem,
     build_trace_components_payload,
@@ -128,6 +129,9 @@ class DiscordTraceSink:
             return
         if "reasoning.encrypted_content" in chunk:
             return
+        chunk = redact_sensitive_text(chunk)
+        if not chunk.strip():
+            return
         self._reasoning_buffer.append(chunk)
         buffered = "".join(self._reasoning_buffer)
         if len(buffered.strip()) >= self.min_reasoning_chars:
@@ -148,7 +152,7 @@ class DiscordTraceSink:
         if event_type not in {"tool.started", "tool.completed", "tool.failed"}:
             return
         status = event_type.split(".", 1)[1]
-        preview_text = str(preview or "")
+        preview_text = redact_sensitive_text(preview or "")
         if self.state.tools:
             last = self.state.tools[-1]
             if last.name == tool_name and last.preview == preview_text and last.status == status:
