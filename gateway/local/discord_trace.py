@@ -45,6 +45,7 @@ class DiscordTraceState:
     reasoning_text: str = ""
     tools: list[ToolTraceItem] = field(default_factory=list)
     message_id: str | None = None
+    target_chat_id: str | None = None
     finalized: bool = False
     last_rendered_hash: str | None = None
 
@@ -204,6 +205,10 @@ class DiscordTraceSink:
         else:
             result = await self.adapter.send_trace(self.state, metadata=self.metadata)
         if result and result.success:
+            raw_response = result.raw_response if isinstance(result.raw_response, dict) else {}
+            effective_chat_id = raw_response.get("effective_chat_id") or raw_response.get("thread_id")
+            if effective_chat_id:
+                self.state.target_chat_id = str(effective_chat_id)
             if not self.state.message_id and result.message_id:
                 self.state.message_id = str(result.message_id)
             self.state.last_rendered_hash = rendered_hash
