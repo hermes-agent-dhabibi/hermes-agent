@@ -81,6 +81,21 @@ async def test_trace_sink_edits_existing_trace_message():
 
 
 @pytest.mark.asyncio
+async def test_trace_sink_tracks_effective_target_chat_id_from_send_result():
+    adapter = FakeTraceAdapter()
+    adapter.send_results = [
+        SendResult(success=True, message_id="trace-1", raw_response={"thread_id": "thread-7"}),
+    ]
+    sink = DiscordTraceSink(adapter, chat_id="forum-1", min_reasoning_chars=1, min_interval=0)
+
+    sink.on_reasoning_delta("Thinking live")
+    result = await sink.flush(force=True)
+
+    assert result.success is True
+    assert sink.state.target_chat_id == "thread-7"
+
+
+@pytest.mark.asyncio
 async def test_trace_sink_serializes_concurrent_first_flushes():
     adapter = FakeTraceAdapter()
     adapter.send_gate = asyncio.Event()

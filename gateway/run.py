@@ -9595,6 +9595,7 @@ class GatewayRunner:
                         _trace_adapter,
                         chat_id=source.chat_id,
                         metadata=_progress_metadata,
+                        is_active=_discord_trace_is_active,
                         show_reasoning=True,
                         show_tools=tool_progress_enabled,
                     )

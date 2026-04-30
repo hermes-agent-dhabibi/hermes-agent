@@ -154,6 +154,46 @@ async def test_local_discord_adapter_trace_text_fallback(monkeypatch):
     assert calls == [
         {"chat_id": "t1", "content": "💭 Thinking\n> hello", "metadata": None}
     ]
+    assert result.raw_response == {
+        "effective_chat_id": "t1",
+        "components_v2": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_local_discord_adapter_send_trace_forum_parent_reuses_forum_aware_send(monkeypatch):
+    adapter = LocalDiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    forum_channel = SimpleNamespace(id=42, type=15)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: forum_channel,
+        fetch_channel=None,
+    )
+    component_calls = []
+    send_calls = []
+
+    async def fake_send_components(chat_id, trace_state):
+        component_calls.append({"chat_id": chat_id, "trace_state": trace_state})
+        return SendResult(success=True, message_id="m-components")
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        send_calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return SendResult(success=True, message_id="m-forum", raw_response={"thread_id": "thread-99"})
+
+    monkeypatch.setattr(adapter, "_send_components_v2", fake_send_components)
+    monkeypatch.setattr(adapter, "send", fake_send)
+
+    state = SimpleNamespace(chat_id="42", reasoning_text="hello", tools=[], fallback_text=lambda: "forum trace")
+
+    result = await adapter.send_trace(state)
+
+    assert component_calls == []
+    assert send_calls == [{"chat_id": "42", "content": "forum trace", "metadata": None}]
+    assert result.success is True
+    assert result.raw_response == {
+        "thread_id": "thread-99",
+        "effective_chat_id": "thread-99",
+        "components_v2": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -218,3 +258,58 @@ async def test_local_discord_adapter_edit_trace_latches_after_structural_failure
         {"chat_id": "c1", "message_id": "m1", "content": "first edit", "finalize": False},
         {"chat_id": "c1", "message_id": "m1", "content": "second edit", "finalize": False},
     ]
+    assert first.raw_response == {
+        "effective_chat_id": "c1",
+        "components_v2": False,
+    }
+    assert second.raw_response == {
+        "effective_chat_id": "c1",
+        "components_v2": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_local_discord_adapter_edit_trace_uses_effective_forum_thread_target(monkeypatch):
+    adapter = LocalDiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    component_calls = []
+    edit_calls = []
+
+    async def fake_edit_components(chat_id, message_id, trace_state):
+        component_calls.append({"chat_id": chat_id, "message_id": message_id})
+        return SendResult(success=True, message_id=message_id)
+
+    async def fake_edit_message(chat_id, message_id, content, finalize=False):
+        edit_calls.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "finalize": finalize,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+    monkeypatch.setattr(adapter, "_edit_components_v2", fake_edit_components)
+    monkeypatch.setattr(adapter, "edit_message", fake_edit_message)
+
+    state = SimpleNamespace(
+        chat_id="42",
+        target_chat_id="thread-99",
+        fallback_text=lambda: "forum trace edit",
+    )
+
+    result = await adapter.edit_trace("m-forum", state)
+
+    assert component_calls == []
+    assert edit_calls == [
+        {
+            "chat_id": "thread-99",
+            "message_id": "m-forum",
+            "content": "forum trace edit",
+            "finalize": False,
+        }
+    ]
+    assert result.raw_response == {
+        "effective_chat_id": "thread-99",
+        "components_v2": False,
+    }

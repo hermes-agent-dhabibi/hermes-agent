@@ -179,6 +179,27 @@ class InterruptingTraceAgent:
         }
 
 
+class BlockingToolAgent:
+    started = None
+    resume = None
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "first command", {})
+        if self.started is not None:
+            self.started.set()
+        if self.resume is not None:
+            self.resume.wait(timeout=5)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -1020,10 +1041,111 @@ async def test_run_agent_discord_trace_drops_updates_after_interrupt(monkeypatch
 
     assert result["final_response"] == "done"
     trace_events = [*adapter.traces_sent, *adapter.traces_edited]
-    assert trace_events
-    final_trace = trace_events[-1]
-    assert [tool.preview for tool in final_trace["tools"]] == ["first command"]
-    assert final_trace["reasoning_text"] == ""
+    assert trace_events == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_passes_trace_is_active_and_drops_queued_flush_after_invalidation(monkeypatch, tmp_path):
+    import threading
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"show_reasoning": True, "tool_progress": "all"}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = BlockingToolAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal metadata
+
+    class FakeDiscordTraceSink:
+        instances = []
+        gate = None
+
+        def __init__(self, adapter, *, chat_id, metadata=None, is_active=None, **kwargs):
+            self.adapter = adapter
+            self.chat_id = chat_id
+            self.metadata = metadata
+            self.is_active_callback = is_active
+            self.tool_events = []
+            self.finish_calls = 0
+            FakeDiscordTraceSink.instances.append(self)
+
+        def on_tool_event(self, event_type, tool_name=None, preview=None, args=None, **kwargs):
+            self.tool_events.append((event_type, tool_name, preview))
+
+        def on_reasoning_delta(self, text):
+            return None
+
+        async def flush(self, *, force=False):
+            if FakeDiscordTraceSink.gate is not None:
+                await FakeDiscordTraceSink.gate.wait()
+            if self.is_active_callback is not None and not self.is_active_callback():
+                return None
+            self.adapter.traces_sent.append({"queued": True, "force": force})
+            return SendResult(success=True, message_id="trace-queued")
+
+        async def finish(self):
+            self.finish_calls += 1
+            if self.is_active_callback is not None and not self.is_active_callback():
+                return None
+            self.adapter.traces_edited.append({"finish": True})
+            return SendResult(success=True, message_id="trace-queued")
+
+    gateway_run = importlib.import_module("gateway.run")
+    fake_trace_module = types.ModuleType("gateway.local.discord_trace")
+    fake_trace_module.DiscordTraceSink = FakeDiscordTraceSink
+    monkeypatch.setitem(sys.modules, "gateway.local.discord_trace", fake_trace_module)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    BlockingToolAgent.started = threading.Event()
+    BlockingToolAgent.resume = threading.Event()
+    FakeDiscordTraceSink.instances = []
+    FakeDiscordTraceSink.gate = asyncio.Event()
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="dm-trace-queued",
+        chat_type="dm",
+        thread_id=None,
+    )
+    session_key = "agent:main:discord:dm:dm-trace-queued"
+    runner._session_run_generation[session_key] = 1
+
+    run_task = asyncio.create_task(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-discord-trace-queued",
+            session_key=session_key,
+            run_generation=1,
+        )
+    )
+
+    await asyncio.to_thread(BlockingToolAgent.started.wait, 5)
+    assert FakeDiscordTraceSink.instances
+    sink = FakeDiscordTraceSink.instances[0]
+    assert callable(sink.is_active_callback)
+
+    runner._invalidate_session_run_generation(session_key, reason="test_stop")
+    FakeDiscordTraceSink.gate.set()
+    BlockingToolAgent.resume.set()
+
+    result = await run_task
+
+    assert result["final_response"] == "done"
+    assert adapter.traces_sent == []
+    assert adapter.traces_edited == []
 
 
 @pytest.mark.asyncio

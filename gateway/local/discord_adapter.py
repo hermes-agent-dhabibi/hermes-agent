@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from typing import Any, Optional
 
@@ -35,7 +36,37 @@ class LocalDiscordAdapter(DiscordAdapter):
     ) -> str:
         if metadata and metadata.get("thread_id"):
             return str(metadata["thread_id"])
+        target_chat_id = getattr(trace_state, "target_chat_id", None)
+        if target_chat_id:
+            return str(target_chat_id)
         return str(getattr(trace_state, "chat_id", "") or "")
+
+    def _trace_effective_chat_id(self, result: SendResult, *, fallback_chat_id: str) -> str:
+        raw_response = result.raw_response if isinstance(result.raw_response, dict) else {}
+        effective_chat_id = raw_response.get("effective_chat_id") or raw_response.get("thread_id")
+        return str(effective_chat_id or fallback_chat_id or "")
+
+    def _with_trace_target(
+        self,
+        result: SendResult,
+        *,
+        fallback_chat_id: str,
+        components_v2: bool | None = None,
+    ) -> SendResult:
+        raw_response = dict(result.raw_response or {}) if isinstance(result.raw_response, dict) else {}
+        effective_chat_id = self._trace_effective_chat_id(result, fallback_chat_id=fallback_chat_id)
+        if effective_chat_id:
+            raw_response.setdefault("effective_chat_id", effective_chat_id)
+        if components_v2 is not None:
+            raw_response["components_v2"] = components_v2
+        return dataclasses.replace(result, raw_response=raw_response)
+
+    def _trace_prefers_text_edit(self, trace_state: Any, metadata: Optional[dict[str, Any]] = None) -> bool:
+        if metadata and metadata.get("thread_id"):
+            return False
+        original_chat_id = str(getattr(trace_state, "chat_id", "") or "")
+        target_chat_id = str(getattr(trace_state, "target_chat_id", "") or "")
+        return bool(original_chat_id and target_chat_id and target_chat_id != original_chat_id)
 
     def _is_components_v2_structural_error(self, error: str | None) -> bool:
         text = str(error or "").lower()
@@ -133,13 +164,19 @@ class LocalDiscordAdapter(DiscordAdapter):
         chat_id = self._trace_target_chat_id(trace_state, metadata)
         if not chat_id:
             return SendResult(success=False, error="trace_state missing chat_id")
+        channel = await self._resolve_channel(chat_id)
+        if channel is not None and self._is_forum_parent(channel) and not (metadata and metadata.get("thread_id")):
+            content = self._trace_fallback_text(trace_state, "💭 Trace started")
+            result = await self.send(str(getattr(trace_state, "chat_id", "") or chat_id), content, metadata=metadata)
+            return self._with_trace_target(result, fallback_chat_id=chat_id, components_v2=False)
         if not self._trace_components_v2_disabled:
             result = await self._send_components_v2(chat_id, trace_state)
             if result.success:
-                return result
+                return self._with_trace_target(result, fallback_chat_id=chat_id, components_v2=True)
             self._latch_components_v2_fallback(result)
         content = self._trace_fallback_text(trace_state, "💭 Trace started")
-        return await self.send(chat_id, content, metadata=None)
+        result = await self.send(chat_id, content, metadata=None)
+        return self._with_trace_target(result, fallback_chat_id=chat_id, components_v2=False)
 
     async def edit_trace(
         self,
@@ -152,10 +189,11 @@ class LocalDiscordAdapter(DiscordAdapter):
         chat_id = self._trace_target_chat_id(trace_state, metadata)
         if not chat_id:
             return SendResult(success=False, error="trace_state missing chat_id")
-        if not self._trace_components_v2_disabled:
+        if not self._trace_prefers_text_edit(trace_state, metadata) and not self._trace_components_v2_disabled:
             result = await self._edit_components_v2(chat_id, message_id, trace_state)
             if result.success:
-                return result
+                return self._with_trace_target(result, fallback_chat_id=chat_id, components_v2=True)
             self._latch_components_v2_fallback(result)
         content = self._trace_fallback_text(trace_state, "💭 Trace updated")
-        return await self.edit_message(chat_id, message_id, content)
+        result = await self.edit_message(chat_id, message_id, content)
+        return self._with_trace_target(result, fallback_chat_id=chat_id, components_v2=False)
