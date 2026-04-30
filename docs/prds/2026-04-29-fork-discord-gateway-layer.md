@@ -516,4 +516,3 @@ Defer until the trace layer is stable:
 - Buttons: defer.
 - Runner subclass: no, not initially.
 - Existing adapter creation hook first: yes.
-

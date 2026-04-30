@@ -9366,13 +9366,30 @@ class GatewayRunner:
         # display.<key> global, then built-in platform defaults.
         from gateway.display_config import resolve_display_setting
 
-        # Apply tool preview length config (0 = no limit)
+        # Apply tool preview length config (0 = no limit for verbose/full-detail
+        # paths, but gateway progress bubbles keep a compact fallback cap when the
+        # setting is unset so persistent chat messages stay readable).
+        _tool_preview_setting = 0
         try:
             from agent.display import set_tool_preview_max_len
+
             _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
-            set_tool_preview_max_len(int(_tpl) if _tpl else 0)
+            _tool_preview_setting = int(_tpl) if _tpl else 0
+            set_tool_preview_max_len(_tool_preview_setting)
         except Exception:
             pass
+
+        _gateway_tool_preview_cap = _tool_preview_setting if _tool_preview_setting > 0 else 40
+
+        def _truncate_gateway_tool_preview(preview: str | None) -> str | None:
+            if preview is None:
+                return None
+            preview = str(preview)
+            if not preview or len(preview) <= _gateway_tool_preview_cap:
+                return preview
+            if _gateway_tool_preview_cap <= 3:
+                return preview[:_gateway_tool_preview_cap]
+            return preview[:_gateway_tool_preview_cap - 3] + "..."
 
         # Tool progress mode — resolved per-platform with env var fallback
         _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
@@ -9415,25 +9432,44 @@ class GatewayRunner:
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
+        def _agent_run_interrupted() -> bool:
+            try:
+                _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                return bool(
+                    _agent_for_interrupt is not None
+                    and getattr(_agent_for_interrupt, "is_interrupted", False)
+                )
+            except Exception:
+                return False
+
+        def _discord_trace_is_active() -> bool:
+            return (
+                _discord_trace_sink is not None
+                and _run_still_current()
+                and not _agent_run_interrupted()
+            )
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             # Only the trace sink renders tool rows for Discord's component UX.
             # Existing progress bubbles remain unchanged for other platforms.
-            if _discord_trace_sink is not None:
-                try:
-                    _discord_trace_sink.on_tool_event(
-                        event_type,
-                        tool_name,
-                        preview,
-                        args,
-                        **kwargs,
-                    )
-                    asyncio.run_coroutine_threadsafe(
-                        _discord_trace_sink.flush(force=False),
-                        _loop_for_step,
-                    )
-                except Exception as _trace_err:
-                    logger.debug("discord trace tool event failed: %s", _trace_err)
+            if _discord_trace_sink is not None and event_type in {"tool.started", "tool.completed", "tool.failed"}:
+                if _discord_trace_is_active():
+                    try:
+                        _discord_trace_sink.on_tool_event(
+                            event_type,
+                            tool_name,
+                            _truncate_gateway_tool_preview(preview),
+                            args,
+                            **kwargs,
+                        )
+                        asyncio.run_coroutine_threadsafe(
+                            _discord_trace_sink.flush(force=False),
+                            _loop_for_step,
+                        )
+                    except Exception as _trace_err:
+                        logger.debug("discord trace tool event failed: %s", _trace_err)
+                return
 
             if not progress_queue or not _run_still_current():
                 return
@@ -9475,14 +9511,8 @@ class GatewayRunner:
             # all N as 🔍 bubbles, making the interrupt feel ignored.
             # (agent lives in run_sync's scope; agent_holder[0] is the shared
             # handle across nested scopes — see line ~9607.)
-            try:
-                _agent_for_interrupt = agent_holder[0] if agent_holder else None
-                if _agent_for_interrupt is not None and getattr(
-                    _agent_for_interrupt, "is_interrupted", False
-                ):
-                    return
-            except Exception:
-                pass
+            if _agent_run_interrupted():
+                return
 
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
@@ -9516,11 +9546,7 @@ class GatewayRunner:
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
             if preview:
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 200
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
+                preview = _truncate_gateway_tool_preview(preview)
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
@@ -9939,6 +9965,8 @@ class GatewayRunner:
                 if not text:
                     return
                 if _discord_trace_sink is not None:
+                    if not _discord_trace_is_active():
+                        return
                     try:
                         _discord_trace_sink.on_reasoning_delta(text)
                         asyncio.run_coroutine_threadsafe(
@@ -9993,7 +10021,10 @@ class GatewayRunner:
                 return len(after) >= _REASONING_MIN_POST_HEADING_CHARS
 
             def _flush_reasoning_buffer(*, force: bool = False) -> None:
-                if not _run_still_current() or not _reasoning_buffer:
+                if not _reasoning_buffer:
+                    return
+                if not _run_still_current() or _agent_run_interrupted():
+                    _reasoning_buffer.clear()
                     return
                 text = _dedupe_reasoning_text("".join(_reasoning_buffer).strip())
                 if not text:
@@ -10014,6 +10045,8 @@ class GatewayRunner:
                 _send_thinking_text(text)
 
             def _reasoning_cb(text: str) -> None:
+                if not _run_still_current() or _agent_run_interrupted():
+                    return
                 chunk = str(text or "")
                 if not chunk.strip() or "reasoning.encrypted_content" in chunk:
                     return
@@ -10398,7 +10431,7 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
             _flush_reasoning_buffer(force=True)
-            if _discord_trace_sink is not None:
+            if _discord_trace_is_active():
                 try:
                     asyncio.run_coroutine_threadsafe(
                         _discord_trace_sink.finish(),
