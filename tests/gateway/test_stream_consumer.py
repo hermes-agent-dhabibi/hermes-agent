@@ -133,39 +133,6 @@ class TestFinalizeCapabilityGate:
         assert picky.edit_message.call_args[1]["finalize"] is True
 
 
-    @pytest.mark.asyncio
-    async def test_reasoning_commentary_replay_edits_previous_message(self):
-        """A fuller replayed reasoning summary should replace the partial one."""
-        adapter = MagicMock()
-        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
-        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
-        adapter.MAX_MESSAGE_LENGTH = 4096
-
-        consumer = GatewayStreamConsumer(adapter, "chat_123")
-        first = (
-            "💭\n"
-            "> **Evaluating tool usage for test answers**\n"
-            "> \n"
-            "> I see that I need to determine whether I should use a tool to answer questions about"
-        )
-        replay = (
-            "💭\n"
-            "> **Evaluating tool usage for test answers**\n"
-            "> \n"
-            "> I see that I need to determine whether I should use a tool to answer questions about "
-            "> a failing test based on previously read file contents. If specifics are required, "
-            "> using the tool would be necessary."
-        )
-
-        assert await consumer._send_commentary(first) is True
-        assert await consumer._send_commentary(replay) is True
-
-        adapter.send.assert_called_once()
-        adapter.edit_message.assert_called_once()
-        assert adapter.edit_message.call_args.kwargs["message_id"] == "msg_1"
-        assert adapter.edit_message.call_args.kwargs["content"] == replay
-
-
 class TestEditMessageFinalizeSignature:
     """Every concrete platform adapter must accept the ``finalize`` kwarg.
 

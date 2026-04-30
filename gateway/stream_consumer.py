@@ -100,14 +100,6 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
-        # Commentary messages normally use plain send() because they are complete
-        # interim status updates, not progressive streams. Reasoning summaries are
-        # the exception: the gateway sends them as commentary prefixed with 💭,
-        # and providers may replay a fuller summary after an early partial one.
-        # Track the prior reasoning commentary so a replay can edit in place
-        # instead of leaving "partial + full duplicate" messages in chat.
-        self._reasoning_commentary_message_id: Optional[str] = None
-        self._reasoning_commentary_text: str = ""
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -139,41 +131,6 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
-
-    @staticmethod
-    def _normalize_reasoning_for_overlap(text: str) -> str:
-        """Normalize displayed reasoning text for overlap comparisons."""
-        text = str(text or "")
-        if text.startswith("💭"):
-            text = text[1:].lstrip("\n")
-        lines = []
-        for line in text.splitlines():
-            if line.startswith("> "):
-                line = line[2:]
-            elif line == ">":
-                line = ""
-            lines.append(line)
-        return "\n".join(lines).strip()
-
-    @classmethod
-    def _reasoning_commentary_overlaps(cls, old_text: str, new_text: str) -> bool:
-        """True when new reasoning commentary supersedes old commentary."""
-        old_norm = cls._normalize_reasoning_for_overlap(old_text)
-        new_norm = cls._normalize_reasoning_for_overlap(new_text)
-        if not old_norm or not new_norm:
-            return False
-        if old_norm == new_norm:
-            return True
-        if new_norm.startswith(old_norm) or old_norm.startswith(new_norm):
-            return True
-        old_heading = old_norm.split("\n\n", 1)[0].strip()
-        new_heading = new_norm.split("\n\n", 1)[0].strip()
-        if old_heading and old_heading == new_heading:
-            old_body = old_norm[len(old_heading):].strip()
-            new_body = new_norm[len(new_heading):].strip()
-            if old_body and new_body:
-                return new_body.startswith(old_body) or old_body.startswith(new_body)
-        return False
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
@@ -761,47 +718,12 @@ class GatewayStreamConsumer:
         text = self._clean_for_display(text)
         if not text.strip():
             return False
-        is_reasoning = text.startswith("💭")
-        if (
-            is_reasoning
-            and self._reasoning_commentary_message_id
-            and self._edit_supported
-            and self._reasoning_commentary_overlaps(
-                self._reasoning_commentary_text,
-                text,
-            )
-        ):
-            result = None
-            try:
-                result = await self.adapter.edit_message(
-                    chat_id=self.chat_id,
-                    message_id=self._reasoning_commentary_message_id,
-                    content=text,
-                    finalize=True,
-                )
-            except TypeError:
-                try:
-                    result = await self.adapter.edit_message(
-                        chat_id=self.chat_id,
-                        message_id=self._reasoning_commentary_message_id,
-                        content=text,
-                    )
-                except Exception as e:
-                    logger.debug("Reasoning commentary edit failed; sending new message: %s", e)
-            except Exception as e:
-                logger.debug("Reasoning commentary edit failed; sending new message: %s", e)
-            if result is not None and result.success:
-                self._reasoning_commentary_text = text
-                return True
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
                 metadata=self.metadata,
             )
-            if is_reasoning and result.success and result.message_id:
-                self._reasoning_commentary_message_id = str(result.message_id)
-                self._reasoning_commentary_text = text
             # Note: do NOT set _already_sent = True here.
             # Commentary messages are interim status updates (e.g. "Using browser
             # tool..."), not the final response. Setting already_sent would cause
