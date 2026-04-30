@@ -4737,29 +4737,9 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
-            # Prepend reasoning/thinking if display is enabled (per-platform)
-            try:
-                from gateway.display_config import resolve_display_setting as _rds
-                _show_reasoning_effective = _rds(
-                    _load_gateway_config(),
-                    _platform_config_key(source.platform),
-                    "show_reasoning",
-                    getattr(self, "_show_reasoning", False),
-                )
-            except Exception:
-                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-            if _show_reasoning_effective and response:
-                last_reasoning = agent_result.get("last_reasoning")
-                if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    quoted = "\n".join(f"> {l}" for l in display_reasoning.splitlines())
-                    response = f"💭 **Reasoning:**\n{quoted}\n\n{response}"
+            # Keep final responses clean: reasoning summaries are rendered live
+            # through per-turn callbacks/trace UI instead of being prepended to
+            # the assistant's final answer.
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -9437,6 +9417,24 @@ class GatewayRunner:
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            # Only the trace sink renders tool rows for Discord's component UX.
+            # Existing progress bubbles remain unchanged for other platforms.
+            if _discord_trace_sink is not None:
+                try:
+                    _discord_trace_sink.on_tool_event(
+                        event_type,
+                        tool_name,
+                        preview,
+                        args,
+                        **kwargs,
+                    )
+                    asyncio.run_coroutine_threadsafe(
+                        _discord_trace_sink.flush(force=False),
+                        _loop_for_step,
+                    )
+                except Exception as _trace_err:
+                    logger.debug("discord trace tool event failed: %s", _trace_err)
+
             if not progress_queue or not _run_still_current():
                 return
 
@@ -9541,9 +9539,6 @@ class GatewayRunner:
             
             progress_queue.put(msg)
         
-        # Background task to send progress messages
-        # Accumulates tool lines into a single message that gets edited.
-        #
         # Threading metadata is platform-specific:
         # - Slack DM threading needs event_message_id fallback (reply thread)
         # - Telegram uses message_thread_id only for forum topics; passing a
@@ -9554,6 +9549,31 @@ class GatewayRunner:
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+
+        # We need to share the agent instance for interrupt support
+        agent_holder = [None]  # Mutable container for the agent instance
+        result_holder = [None]  # Mutable container for the result
+        tools_holder = [None]   # Mutable container for the tool definitions
+        stream_consumer_holder = [None]  # Mutable container for stream consumer
+
+        # Bridge sync callbacks → async gateway/platform work.
+        _loop_for_step = asyncio.get_running_loop()
+        _hooks_ref = self.hooks
+        _discord_trace_sink = None
+        if source.platform == Platform.DISCORD and show_reasoning_enabled:
+            try:
+                from gateway.local.discord_trace import DiscordTraceSink
+                _trace_adapter = self.adapters.get(source.platform)
+                if _trace_adapter is not None and getattr(_trace_adapter, "supports_trace_components", False):
+                    _discord_trace_sink = DiscordTraceSink(
+                        _trace_adapter,
+                        chat_id=source.chat_id,
+                        metadata=_progress_metadata,
+                        show_reasoning=True,
+                        show_tools=tool_progress_enabled,
+                    )
+            except Exception as _trace_err:
+                logger.debug("Could not set up Discord trace sink: %s", _trace_err)
 
         async def send_progress_messages():
             if not progress_queue:
@@ -9711,16 +9731,7 @@ class GatewayRunner:
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
         
-        # We need to share the agent instance for interrupt support
-        agent_holder = [None]  # Mutable container for the agent instance
-        result_holder = [None]  # Mutable container for the result
-        tools_holder = [None]   # Mutable container for the tool definitions
-        stream_consumer_holder = [None]  # Mutable container for stream consumer
         
-        # Bridge sync step_callback → async hooks.emit for agent:step events
-        _loop_for_step = asyncio.get_running_loop()
-        _hooks_ref = self.hooks
-
         def _step_callback_sync(iteration: int, prev_tools: list) -> None:
             if not _run_still_current():
                 return
@@ -9926,6 +9937,16 @@ class GatewayRunner:
             def _send_thinking_text(text: str) -> None:
                 text = str(text or "").strip()
                 if not text:
+                    return
+                if _discord_trace_sink is not None:
+                    try:
+                        _discord_trace_sink.on_reasoning_delta(text)
+                        asyncio.run_coroutine_threadsafe(
+                            _discord_trace_sink.flush(force=True),
+                            _loop_for_step,
+                        )
+                    except Exception as _trace_err:
+                        logger.debug("discord trace reasoning send failed: %s", _trace_err)
                     return
                 quoted = "\n".join(f"> {l}" for l in text.splitlines())
                 _interim_assistant_cb(f"💭\n{quoted}", already_streamed=False)
@@ -10377,6 +10398,14 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
             _flush_reasoning_buffer(force=True)
+            if _discord_trace_sink is not None:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        _discord_trace_sink.finish(),
+                        _loop_for_step,
+                    ).result(timeout=10)
+                except Exception as _trace_err:
+                    logger.debug("discord trace final flush failed: %s", _trace_err)
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:

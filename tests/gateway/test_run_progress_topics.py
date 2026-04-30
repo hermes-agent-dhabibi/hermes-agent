@@ -20,6 +20,8 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.sent = []
         self.edits = []
         self.typing = []
+        self.traces_sent = []
+        self.traces_edited = []
 
     async def connect(self) -> bool:
         return True
@@ -50,6 +52,29 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id, metadata=None) -> None:
         self.typing.append({"chat_id": chat_id, "metadata": metadata})
+
+    @property
+    def supports_trace_components(self) -> bool:
+        return self.platform == Platform.DISCORD
+
+    async def send_trace(self, state, *, metadata=None) -> SendResult:
+        self.traces_sent.append({
+            "chat_id": state.chat_id,
+            "reasoning_text": state.reasoning_text,
+            "tools": list(state.tools),
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id="trace-1")
+
+    async def edit_trace(self, message_id, state, *, metadata=None) -> SendResult:
+        self.traces_edited.append({
+            "message_id": message_id,
+            "chat_id": state.chat_id,
+            "reasoning_text": state.reasoning_text,
+            "tools": list(state.tools),
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id=message_id)
 
     async def stop_typing(self, chat_id) -> None:
         self.typing.append({"chat_id": chat_id, "metadata": {"stopped": True}})
@@ -802,6 +827,73 @@ async def test_run_agent_does_not_duplicate_final_last_reasoning(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_run_agent_discord_trace_receives_reasoning_when_enabled(monkeypatch, tmp_path):
+    ReasoningSummaryAgent.chunks = ["Planning the lookup", " and checking files."]
+    ReasoningSummaryAgent.last_reasoning = None
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-discord-trace-reasoning-enabled",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
+        platform=Platform.DISCORD,
+        chat_id="1479509172243664999",
+        chat_type="group",
+        thread_id="1499094649703366807",
+    )
+
+    assert result["final_response"] == "done"
+    trace_events = [*adapter.traces_sent, *adapter.traces_edited]
+    assert trace_events
+    assert trace_events[-1]["reasoning_text"] == "Planning the lookup and checking files."
+    assert trace_events[-1]["metadata"] == {"thread_id": "1499094649703366807"}
+    assert not any(call["content"].startswith("💭") for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_discord_trace_suppressed_when_reasoning_disabled(monkeypatch, tmp_path):
+    ReasoningSummaryAgent.chunks = ["Planning the lookup"]
+    ReasoningSummaryAgent.last_reasoning = None
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-discord-trace-reasoning-disabled",
+        config_data={"display": {"show_reasoning": False, "tool_progress": "off"}},
+        platform=Platform.DISCORD,
+        chat_id="1479509172243664999",
+        chat_type="group",
+        thread_id="1499094649703366807",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.traces_sent == []
+    assert adapter.traces_edited == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_discord_trace_receives_tool_events(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-discord-trace-tools",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "all"}},
+        platform=Platform.DISCORD,
+        chat_id="1479509172243664999",
+        chat_type="group",
+        thread_id="1499094649703366807",
+    )
+
+    assert result["final_response"] == "done"
+    trace_events = [*adapter.traces_sent, *adapter.traces_edited]
+    assert trace_events
+    tool_names = [tool.name for tool in trace_events[-1]["tools"]]
+    assert "terminal" in tool_names
+    assert "browser_navigate" in tool_names
+
+
+@pytest.mark.asyncio
 async def test_run_agent_suppresses_streamed_reasoning_when_disabled(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -813,6 +905,24 @@ async def test_run_agent_suppresses_streamed_reasoning_when_disabled(monkeypatch
 
     assert result["final_response"] == "done"
     assert not any("Planning the lookup" in call["content"] for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_final_response_does_not_prepend_last_reasoning(monkeypatch, tmp_path):
+    ReasoningSummaryAgent.chunks = []
+    ReasoningSummaryAgent.last_reasoning = "This should stay out of the final answer."
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReasoningSummaryAgent,
+        session_id="sess-reasoning-final-clean",
+        config_data={"display": {"show_reasoning": True, "tool_progress": "off"}},
+    )
+    ReasoningSummaryAgent.last_reasoning = None
+
+    assert result["final_response"] == "done"
+    assert not result["final_response"].startswith("💭")
+    assert not any("This should stay out" in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio
