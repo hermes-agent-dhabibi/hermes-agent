@@ -90,7 +90,7 @@ class TestExtractMediaArbitraryFiles:
         content = "MEDIA:~/data/config.json"
         media, _ = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "~/data/config.json"
+        assert media[0][0] == os.path.expanduser("~/data/config.json")
 
     def test_csv_extracted(self):
         content = "MEDIA:/tmp/transactions.csv"
@@ -120,7 +120,7 @@ class TestExtractMediaArbitraryFiles:
         content = "MEDIA:~/docs/README.md"
         media, _ = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
-        assert media[0][0] == "~/docs/README.md"
+        assert media[0][0] == os.path.expanduser("~/docs/README.md")
 
     def test_html_file_extracted(self):
         content = "MEDIA:/tmp/output.html"

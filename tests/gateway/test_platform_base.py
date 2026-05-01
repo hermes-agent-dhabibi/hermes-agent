@@ -343,7 +343,7 @@ class TestExtractMedia:
 
         valid_cases = [
             ("MEDIA:/tmp/image.png", "/tmp/image.png"),
-            ("MEDIA:~/audio/voice.ogg", "~/audio/voice.ogg"),
+            ("MEDIA:~/audio/voice.ogg", os.path.expanduser("~/audio/voice.ogg")),
             ('MEDIA:"/path/to/file.mp4"', "/path/to/file.mp4"),
         ]
         for content, expected_path in valid_cases:
