@@ -1318,7 +1318,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(chat_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+                return SendResult(success=False, error="message_too_long")
             # Use get_partial_message to avoid an extra fetch round-trip.
             # Discord's API supports editing by ID directly; the fetch_message
             # call was redundant and often 503'd under load.
