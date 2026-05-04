@@ -46,7 +46,9 @@ def _ensure_discord_mock():
         discord_mod.app_commands = SimpleNamespace(
             describe=lambda **kwargs: (lambda fn: fn),
             choices=lambda **kwargs: (lambda fn: fn),
-            autocomplete=lambda **kwargs: (lambda fn: fn),
+            autocomplete=lambda **kwargs: (
+                lambda fn: setattr(fn, "__discord_autocomplete__", kwargs) or fn
+            ),
             Choice=lambda **kwargs: SimpleNamespace(**kwargs),
             Group=_FakeGroup,
             Command=_FakeCommand,
@@ -66,9 +68,11 @@ def _ensure_discord_mock():
     # need onto discord.app_commands — the flat /skill command uses
     # @app_commands.autocomplete and not every other mock stub exposes it.
     _app = getattr(sys.modules["discord"], "app_commands", None)
-    if _app is not None and not hasattr(_app, "autocomplete"):
+    if _app is not None:
         try:
-            _app.autocomplete = lambda **kwargs: (lambda fn: fn)
+            _app.autocomplete = lambda **kwargs: (
+                lambda fn: setattr(fn, "__discord_autocomplete__", kwargs) or fn
+            )
         except Exception:
             pass
 
@@ -76,6 +80,20 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+
+
+def _fake_skill_commands(names: list[str]) -> dict[str, dict[str, str]]:
+    return {
+        f"/{name}": {
+            "name": name,
+            "description": f"{name} description",
+        }
+        for name in names
+    }
+
+
+def _skill_autocomplete_callback(skill_cmd):
+    return getattr(skill_cmd.callback, "__discord_autocomplete__", {})["name"]
 
 
 class FakeTree:
@@ -1010,8 +1028,15 @@ def test_refresh_skill_autocomplete_cache_rebuilds_skill_command_snapshot(adapte
         return second
 
     with patch(
-        "agent.skill_commands.get_skill_commands",
-        return_value=first,
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=(
+            {},
+            [
+                (info["name"], info["description"], cmd_key)
+                for cmd_key, info in first.items()
+            ],
+            0,
+        ),
     ), patch(
         "agent.skill_utils.get_disabled_skill_names",
         return_value=set(),

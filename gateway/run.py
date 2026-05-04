@@ -12773,8 +12773,6 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
-                    chat_id=source.chat_id,
-                    thread_id=source.thread_id,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
