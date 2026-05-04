@@ -14,6 +14,13 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.session import SessionSource
 
 
+INTERIM_INSPECT = "I'll inspect the repo first."
+INTERIM_INSPECT_QUOTED = "💭\n> I'll inspect the repo first."
+INTERIM_WELCOME_QUOTED = "💭\n> You're welcome."
+FIRST_INTERIM_QUOTED = "💭\n> first interim"
+SECOND_INTERIM_QUOTED = "💭\n> second interim"
+
+
 class ProgressCaptureAdapter(BasePlatformAdapter):
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
@@ -584,7 +591,7 @@ async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path)
     )
 
     assert result.get("already_sent") is not True
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+    assert any(call["content"] == INTERIM_INSPECT_QUOTED for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -596,7 +603,7 @@ async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp
         session_id="sess-commentary-default-on",
     )
 
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+    assert any(call["content"] == INTERIM_INSPECT_QUOTED for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -610,7 +617,7 @@ async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch
     )
 
     assert result.get("already_sent") is not True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+    assert not any(INTERIM_INSPECT in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -625,7 +632,7 @@ async def test_run_agent_tool_progress_does_not_control_interim_commentary(monke
     )
 
     assert result.get("already_sent") is not True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+    assert not any(INTERIM_INSPECT in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -645,7 +652,7 @@ async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
     )
 
     assert result.get("already_sent") is True
-    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+    assert not any(INTERIM_INSPECT in call["content"] for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -666,7 +673,7 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
-    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+    assert [call["content"] for call in adapter.sent] == [INTERIM_INSPECT_QUOTED]
 
 
 @pytest.mark.asyncio
@@ -685,7 +692,7 @@ async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeyp
     )
 
     assert result.get("already_sent") is not True
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+    assert any(call["content"] == INTERIM_INSPECT_QUOTED for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -704,7 +711,7 @@ async def test_run_agent_bluebubbles_uses_commentary_send_path_for_quick_replies
     )
 
     assert result.get("already_sent") is not True
-    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+    assert [call["content"] for call in adapter.sent] == [INTERIM_INSPECT_QUOTED]
     assert adapter.edits == []
 
 
@@ -719,7 +726,7 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
     )
 
     assert result.get("already_sent") is True
-    assert [call["content"] for call in adapter.sent] == ["You're welcome."]
+    assert [call["content"] for call in adapter.sent] == [INTERIM_WELCOME_QUOTED]
 
 
 @pytest.mark.asyncio
@@ -760,7 +767,7 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
 
     sent_texts = [call["content"] for call in adapter.sent]
     assert result["final_response"] == "final response 2"
-    assert "I'll inspect the repo first." in sent_texts
+    assert INTERIM_INSPECT_QUOTED in sent_texts
     assert "final response 1" in sent_texts
 
 
@@ -923,7 +930,7 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
 
     async def send_and_invalidate(chat_id, content, reply_to=None, metadata=None):
         result = await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)
-        if content == "first interim" and not invalidated["done"]:
+        if content == FIRST_INTERIM_QUOTED and not invalidated["done"]:
             invalidated["done"] = True
             runner._invalidate_session_run_generation(session_key, reason="test_stop")
         return result
@@ -942,8 +949,8 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
 
     sent_texts = [call["content"] for call in adapter.sent]
     assert result["final_response"] == "done"
-    assert "first interim" in sent_texts
-    assert "second interim" not in sent_texts
+    assert FIRST_INTERIM_QUOTED in sent_texts
+    assert SECOND_INTERIM_QUOTED not in sent_texts
 
 
 @pytest.mark.asyncio

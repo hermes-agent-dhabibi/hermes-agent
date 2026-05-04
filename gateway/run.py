@@ -6394,7 +6394,8 @@ class GatewayRunner:
                         display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                    quoted = "\n".join(f"> {line}" for line in display_reasoning.splitlines())
+                    response = f"💭 **Reasoning:**\n{quoted}\n\n{response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -12695,15 +12696,19 @@ class GatewayRunner:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
-                        _stream_consumer.on_commentary(text)
+                        quoted = "\n".join(f"> {line}" for line in text.splitlines())
+                        _stream_consumer.on_commentary(f"💭\n{quoted}")
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
                 try:
+                    if progress_queue:
+                        progress_queue.put(("__reset__",))
+                    quoted = "\n".join(f"> {line}" for line in text.splitlines())
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
-                            text,
+                            f"💭\n{quoted}",
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
