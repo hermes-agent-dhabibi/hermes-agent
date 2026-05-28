@@ -3805,6 +3805,9 @@ class GatewayRunner:
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
                     reason="shutdown",
+                    chat_id=getattr(agent, "chat_id", None),
+                    thread_id=getattr(agent, "thread_id", None),
+                    user_id=getattr(agent, "_user_id", None),
                 )
             except Exception:
                 pass
@@ -5038,6 +5041,9 @@ class GatewayRunner:
                                 session_id=entry.session_id,
                                 platform=_platform,
                                 reason="session_expired",
+                                chat_id=getattr(entry.origin, "chat_id", None) if entry.origin else None,
+                                thread_id=getattr(entry.origin, "thread_id", None) if entry.origin else None,
+                                user_id=getattr(entry.origin, "user_id", None) if entry.origin else None,
                             )
                         except Exception:
                             pass
@@ -10012,6 +10018,9 @@ class GatewayRunner:
                 reason="new_session",
                 old_session_id=_old_sid,
                 new_session_id=new_entry.session_id if new_entry else None,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                user_id=source.user_id,
             )
         except Exception:
             pass
@@ -10088,6 +10097,9 @@ class GatewayRunner:
                 reason="new_session",
                 old_session_id=_old_sid,
                 new_session_id=_new_sid,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                user_id=source.user_id,
             )
         except Exception:
             pass

@@ -974,6 +974,9 @@ def _run_cleanup():
             session_id=_active_agent_ref.session_id if _active_agent_ref else None,
             platform="cli",
             reason="shutdown",
+            chat_id="cli",
+            thread_id=None,
+            user_id=None,
         )
     except Exception:
         pass
@@ -6588,6 +6591,9 @@ class HermesCLI:
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",
                 reason="new_session" if event_type == "on_session_reset" else "session_boundary",
+                chat_id="cli",
+                thread_id=None,
+                user_id=None,
             )
         except Exception:
             pass
@@ -15343,6 +15349,9 @@ class HermesCLI:
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
                         reason="shutdown",
+                        chat_id="cli",
+                        thread_id=None,
+                        user_id=None,
                     )
                 except Exception:
                     pass
