@@ -5953,6 +5953,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
                     reason="shutdown",
+                    chat_id=getattr(agent, "chat_id", None),
+                    thread_id=getattr(agent, "thread_id", None),
+                    user_id=getattr(agent, "_user_id", None),
                 )
             except Exception:
                 pass
@@ -7686,6 +7689,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 session_id=entry.session_id,
                                 platform=_platform,
                                 reason="session_expired",
+                                chat_id=getattr(entry.origin, "chat_id", None) if entry.origin else None,
+                                thread_id=getattr(entry.origin, "thread_id", None) if entry.origin else None,
+                                user_id=getattr(entry.origin, "user_id", None) if entry.origin else None,
                             )
                         except Exception:
                             pass
