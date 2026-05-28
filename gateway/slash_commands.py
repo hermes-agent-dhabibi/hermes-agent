@@ -137,6 +137,9 @@ class GatewaySlashCommandsMixin:
                 reason="new_session",
                 old_session_id=_old_sid,
                 new_session_id=new_entry.session_id if new_entry else None,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                user_id=source.user_id,
             )
         except Exception:
             pass
@@ -213,6 +216,9 @@ class GatewaySlashCommandsMixin:
                 reason="new_session",
                 old_session_id=_old_sid,
                 new_session_id=_new_sid,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                user_id=source.user_id,
             )
         except Exception:
             pass

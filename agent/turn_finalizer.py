@@ -275,6 +275,9 @@ def finalize_turn(
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                sender_id=getattr(agent, "_user_id", None) or "",
+                chat_id=getattr(agent, "chat_id", None),
+                thread_id=getattr(agent, "thread_id", None),
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
@@ -421,6 +424,9 @@ def finalize_turn(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            chat_id=getattr(agent, "chat_id", None),
+            thread_id=getattr(agent, "thread_id", None),
+            user_id=getattr(agent, "_user_id", None),
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

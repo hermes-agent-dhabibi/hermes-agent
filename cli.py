@@ -1047,6 +1047,9 @@ def _notify_session_finalize(
             session_id=session_id,
             platform=platform,
             reason=reason,
+            chat_id="cli",
+            thread_id=None,
+            user_id=None,
         )
     except Exception:
         pass
@@ -1083,6 +1086,9 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
             model=getattr(agent, "model", None),
             platform=getattr(agent, "platform", None) or "cli",
             reason=reason,
+            chat_id="cli",
+            thread_id=None,
+            user_id=None,
         )
     except Exception:
         pass
@@ -5992,6 +5998,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",
                 reason="new_session" if event_type == "on_session_reset" else "session_boundary",
+                chat_id="cli",
+                thread_id=None,
+                user_id=None,
             )
         except Exception:
             pass
@@ -14107,6 +14116,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
                         reason="shutdown",
+                        chat_id="cli",
+                        thread_id=None,
+                        user_id=None,
                     )
                 except Exception:
                     pass

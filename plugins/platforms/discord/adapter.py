@@ -634,7 +634,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
@@ -1797,10 +1797,10 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+                return SendResult(success=False, error="message_too_long")
+            msg = channel.get_partial_message(int(message_id))
             await msg.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
