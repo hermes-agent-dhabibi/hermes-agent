@@ -297,6 +297,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             session_id=agent.session_id,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            chat_id=getattr(agent, "chat_id", None),
+            thread_id=getattr(agent, "thread_id", None),
+            user_id=getattr(agent, "_user_id", None),
         )
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
@@ -708,6 +711,8 @@ def run_conversation(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            chat_id=getattr(agent, "chat_id", None),
+            thread_id=getattr(agent, "thread_id", None),
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:
@@ -4578,6 +4583,9 @@ def run_conversation(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                sender_id=getattr(agent, "_user_id", None) or "",
+                chat_id=getattr(agent, "chat_id", None),
+                thread_id=getattr(agent, "thread_id", None),
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
@@ -4696,6 +4704,9 @@ def run_conversation(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            chat_id=getattr(agent, "chat_id", None),
+            thread_id=getattr(agent, "thread_id", None),
+            user_id=getattr(agent, "_user_id", None),
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

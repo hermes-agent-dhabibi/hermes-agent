@@ -3627,6 +3627,9 @@ class GatewayRunner:
                     "on_session_finalize",
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
+                    chat_id=getattr(agent, "chat_id", None),
+                    thread_id=getattr(agent, "thread_id", None),
+                    user_id=getattr(agent, "_user_id", None),
                 )
             except Exception:
                 pass
@@ -4782,6 +4785,9 @@ class GatewayRunner:
                                 "on_session_finalize",
                                 session_id=entry.session_id,
                                 platform=_platform,
+                                chat_id=getattr(entry.origin, "chat_id", None) if entry.origin else None,
+                                thread_id=getattr(entry.origin, "thread_id", None) if entry.origin else None,
+                                user_id=getattr(entry.origin, "user_id", None) if entry.origin else None,
                             )
                         except Exception:
                             pass
@@ -9662,7 +9668,10 @@ class GatewayRunner:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _old_sid = old_entry.session_id if old_entry else None
             _invoke_hook("on_session_finalize", session_id=_old_sid,
-                         platform=source.platform.value if source.platform else "")
+                         platform=source.platform.value if source.platform else "",
+                         chat_id=source.chat_id,
+                         thread_id=source.thread_id,
+                         user_id=source.user_id)
         except Exception:
             pass
 
@@ -9732,7 +9741,10 @@ class GatewayRunner:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _new_sid = new_entry.session_id if new_entry else None
             _invoke_hook("on_session_reset", session_id=_new_sid,
-                         platform=source.platform.value if source.platform else "")
+                         platform=source.platform.value if source.platform else "",
+                         chat_id=source.chat_id,
+                         thread_id=source.thread_id,
+                         user_id=source.user_id)
         except Exception:
             pass
 
