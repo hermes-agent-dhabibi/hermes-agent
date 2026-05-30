@@ -1905,7 +1905,7 @@ atexit.register(_atexit_cleanup)
 # wastes a turn investigating something that just means "no matches".
 # This lookup adds a human-readable note so the agent can move on.
 
-def _interpret_exit_code(command: str, exit_code: int) -> str | None:
+def _interpret_exit_code(command: str, exit_code: int, output: str = "") -> str | None:
     """Return a human-readable note when a non-zero exit code is non-erroneous.
 
     Returns None when the exit code is 0 or genuinely signals an error.
@@ -1933,6 +1933,11 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
 
     if not base_cmd:
         return None
+
+    if base_cmd == "git":
+        missing_rev = _git_missing_revision_from_output(output or "")
+        if missing_rev:
+            return f"Git revision {missing_rev!r} was not found in this checkout (not a Hermes/backend failure)"
 
     # Command-specific semantics
     semantics: dict[str, dict[int, str]] = {
@@ -1967,6 +1972,18 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
         return cmd_semantics[exit_code]
 
     return None
+
+
+_GIT_BAD_REVISION_RE = re.compile(r"(?:fatal:\s*)?bad revision ['\"]?([^'\"\n]+)['\"]?", re.IGNORECASE)
+
+
+def _git_missing_revision_from_output(output: str) -> str | None:
+    """Return missing git revision from a standard `fatal: bad revision` message."""
+    match = _GIT_BAD_REVISION_RE.search(output or "")
+    if not match:
+        return None
+    rev = match.group(1).strip()
+    return rev or None
 
 
 def _command_requires_pipe_stdin(command: str) -> bool:
@@ -2734,7 +2751,7 @@ def terminal_tool(
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
-            exit_note = _interpret_exit_code(command, returncode)
+            exit_note = _interpret_exit_code(command, returncode, output)
 
             result_dict = {
                 "output": output,
