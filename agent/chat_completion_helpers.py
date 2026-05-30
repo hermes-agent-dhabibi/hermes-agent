@@ -283,7 +283,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
     _responses_stream_title = _responses_stream_label(agent, title=True)
     _responses_stream_status = _responses_stream_label(agent, title=False)
     _est_tokens_for_codex_watchdog = estimate_request_context_tokens(api_kwargs)
-    if _codex_watchdog_enabled and _openai_codex_backend:
+    _prefill_heavy_responses_backend = (
+        _openai_codex_backend or _is_copilot_responses_backend(agent)
+    )
+    if _codex_watchdog_enabled and _prefill_heavy_responses_backend:
         if _est_tokens_for_codex_watchdog > 100_000:
             _stale_timeout = max(_stale_timeout, 1200.0)
         elif _est_tokens_for_codex_watchdog > 50_000:
@@ -311,7 +314,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
-    elif _openai_codex_backend:
+    elif _prefill_heavy_responses_backend:
         _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 25_000.0)
         _ttfb_strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
             "1", "true", "yes", "on"
@@ -323,9 +326,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
         ):
             _ttfb_enabled = False
             logger.info(
-                "Disabling openai-codex no-byte TTFB watchdog for large request "
+                "Disabling %s no-byte TTFB watchdog for large request "
                 "(context=~%s tokens >= %.0f). Waiting for backend response instead. "
                 "Set HERMES_CODEX_TTFB_STRICT=1 to force early reconnects.",
+                _responses_stream_status,
                 f"{_est_tokens_for_codex_watchdog:,}",
                 _ttfb_disable_above,
             )
