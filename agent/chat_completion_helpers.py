@@ -115,6 +115,27 @@ def _is_openai_codex_backend(agent) -> bool:
     )
 
 
+def _is_copilot_responses_backend(agent) -> bool:
+    """Return true for GitHub Copilot's Responses-compatible stream path.
+
+    Copilot may use ``api_mode=codex_responses`` for GPT-5/Codex-family models,
+    but it is not the ChatGPT OpenAI Codex backend at
+    ``chatgpt.com/backend-api/codex``.  Keep these classifiers separate so
+    watchdog tuning and logs don't misidentify api.githubcopilot.com traffic.
+    """
+    base_url_hostname = str(getattr(agent, "_base_url_hostname", "") or "")
+    provider = str(getattr(agent, "provider", "") or "")
+    return provider == "copilot" or base_url_hostname == "api.githubcopilot.com"
+
+
+def _responses_stream_label(agent, *, title: bool = False) -> str:
+    if _is_copilot_responses_backend(agent):
+        return "Copilot responses stream" if title else "copilot responses stream"
+    if _is_openai_codex_backend(agent):
+        return "OpenAI Codex stream" if title else "openai-codex stream"
+    return "Responses stream" if title else "responses stream"
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -259,6 +280,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each).
     _codex_watchdog_enabled = agent.api_mode == "codex_responses"
     _openai_codex_backend = _is_openai_codex_backend(agent)
+    _responses_stream_title = _responses_stream_label(agent, title=True)
+    _responses_stream_status = _responses_stream_label(agent, title=False)
     _est_tokens_for_codex_watchdog = estimate_request_context_tokens(api_kwargs)
     if _codex_watchdog_enabled and _openai_codex_backend:
         if _est_tokens_for_codex_watchdog > 100_000:
@@ -370,22 +393,22 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 except Exception:
                     _silent_hint = None
             logger.warning(
-                "Codex stream produced no bytes within TTFB cutoff "
+                "%s produced no bytes within TTFB cutoff "
                 "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
                 "but sent no stream events. Killing connection so the retry "
                 "loop can reconnect.",
-                _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
+                _responses_stream_title, _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
             )
             if _silent_hint:
                 agent._buffer_status(
                     f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                    f"({_responses_stream_status}, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Reconnecting. {_silent_hint}"
                 )
             else:
                 agent._buffer_status(
                     f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                    f"({_responses_stream_status}, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Reconnecting."
                 )
             try:
@@ -393,19 +416,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
             except Exception:
                 pass
             agent._touch_activity(
-                f"codex stream killed after {int(_elapsed)}s with no first byte"
+                f"{_responses_stream_status} killed after {int(_elapsed)}s with no first byte"
             )
             # Wait briefly for the worker to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
                 if _silent_hint:
                     result["error"] = TimeoutError(
-                        f"Codex stream produced no bytes within {int(_elapsed)}s "
+                        f"{_responses_stream_title} produced no bytes within {int(_elapsed)}s "
                         f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}"
                     )
                 else:
                     result["error"] = TimeoutError(
-                        f"Codex stream produced no bytes within {int(_elapsed)}s "
+                        f"{_responses_stream_title} produced no bytes within {int(_elapsed)}s "
                         f"(TTFB threshold: {int(_ttfb_timeout)}s)"
                     )
             break
@@ -421,16 +444,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
         ):
             _event_stale_elapsed = time.time() - _last_codex_event_ts
             logger.warning(
-                "Codex stream produced no SSE events for %.0fs after first byte "
+                "%s produced no SSE events for %.0fs after first byte "
                 "(threshold %.0fs, model=%s, context=~%s tokens). Killing "
                 "connection so the retry loop can reconnect.",
+                _responses_stream_title,
                 _event_stale_elapsed,
                 _codex_idle_timeout,
                 api_kwargs.get("model", "unknown"),
                 f"{_est_tokens_for_codex_watchdog:,}",
             )
             agent._buffer_status(
-                f"⚠️ Codex stream sent no events for {int(_event_stale_elapsed)}s "
+                f"⚠️ {_responses_stream_title} sent no events for {int(_event_stale_elapsed)}s "
                 f"after first byte (model: {api_kwargs.get('model', 'unknown')}). "
                 f"Reconnecting."
             )
@@ -439,12 +463,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
             except Exception:
                 pass
             agent._touch_activity(
-                f"codex stream killed after {int(_event_stale_elapsed)}s with no SSE events"
+                f"{_responses_stream_status} killed after {int(_event_stale_elapsed)}s with no SSE events"
             )
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
                 result["error"] = TimeoutError(
-                    f"Codex stream produced no SSE events for {int(_event_stale_elapsed)}s "
+                    f"{_responses_stream_title} produced no SSE events for {int(_event_stale_elapsed)}s "
                     f"after first byte (threshold: {int(_codex_idle_timeout)}s)"
                 )
             break
@@ -571,13 +595,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url_host_matches(agent.base_url, "models.github.ai")
             or base_url_host_matches(agent.base_url, "api.githubcopilot.com")
         )
-        is_codex_backend = (
-            agent.provider == "openai-codex"
-            or (
-                agent._base_url_hostname == "chatgpt.com"
-                and "/backend-api/codex" in agent._base_url_lower
-            )
-        )
+        is_codex_backend = _is_openai_codex_backend(agent)
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
