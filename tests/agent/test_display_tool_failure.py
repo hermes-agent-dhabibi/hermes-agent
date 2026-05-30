@@ -57,6 +57,18 @@ class TestDetectToolFailureTerminal:
         assert suffix.startswith(" [")
         assert suffix.endswith("]")
 
+    def test_terminal_missing_git_revision_is_diagnostic_not_failure(self):
+        result = json.dumps({
+            "output": "fatal: bad revision '4abfb6bc4'",
+            "exit_code": 128,
+            "error": None,
+            "exit_code_meaning": "Git revision '4abfb6bc4' was not found in this checkout",
+        })
+
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+
+        assert is_failure is False
+        assert suffix == ""
 
 
 
@@ -118,4 +130,3 @@ class TestGetCuteToolMessageFailureSuffix:
         ok = json.dumps({"success": True, "data": "hi"})
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
         assert "[" not in line.split("0.2s", 1)[1]
-
