@@ -407,6 +407,7 @@ class TestExtractMedia:
             "MEDIA:placeholder",
             "MEDIA:foo.png",
             "MEDIA:bar",
+            "MEDIA:<absolute/path/to/file.html>",
         ]
         for content in non_path_cases:
             media, _ = BasePlatformAdapter.extract_media(content)
@@ -421,6 +422,19 @@ class TestExtractMedia:
             media, _ = BasePlatformAdapter.extract_media(content)
             assert len(media) == 1, f"Should match: {content!r}"
             assert media[0][0] == expected_path
+
+    def test_media_tag_extracts_generated_artifact_extensions(self):
+        """Generated files like HTML/Markdown/SVG should attach like images/audio."""
+        cases = [
+            ("MEDIA:/tmp/learner.html", "/tmp/learner.html"),
+            ("MEDIA:/tmp/notes.md", "/tmp/notes.md"),
+            ("MEDIA:/tmp/diagram.svg", "/tmp/diagram.svg"),
+            ("MEDIA:/tmp/archive.tar.gz", "/tmp/archive.tar.gz"),
+        ]
+        for content, expected_path in cases:
+            media, cleaned = BasePlatformAdapter.extract_media(content)
+            assert media == [(expected_path, False)], f"Should match: {content!r}"
+            assert cleaned == ""
 
 
 class TestMediaExtensionAllowlistParity:
