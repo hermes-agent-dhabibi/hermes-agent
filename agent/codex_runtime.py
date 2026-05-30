@@ -273,7 +273,7 @@ def _consume_codex_event_stream(
     collected_text_deltas: List[str] = []
     has_tool_calls = False
     first_delta_fired = False
-    terminal_status: str = "completed"
+    terminal_status: str | None = None
     terminal_usage: Any = None
     terminal_response_id: str = None
     terminal_incomplete_details: Any = None
@@ -358,8 +358,8 @@ def _consume_codex_event_stream(
                 rstatus = getattr(resp_obj, "status", None)
                 if rstatus is None and isinstance(resp_obj, dict):
                     rstatus = resp_obj.get("status")
-                if isinstance(rstatus, str):
-                    terminal_status = rstatus
+                if isinstance(rstatus, str) and rstatus.strip():
+                    terminal_status = rstatus.strip()
                 if event_type == "response.incomplete":
                     terminal_incomplete_details = getattr(resp_obj, "incomplete_details", None)
                     if terminal_incomplete_details is None and isinstance(resp_obj, dict):
@@ -369,11 +369,11 @@ def _consume_codex_event_stream(
                     if terminal_error is None and isinstance(resp_obj, dict):
                         terminal_error = resp_obj.get("error")
             if event_type == "response.completed":
-                terminal_status = terminal_status or "completed"
+                terminal_status = "completed"
             elif event_type == "response.incomplete":
-                terminal_status = terminal_status or "incomplete"
+                terminal_status = "incomplete"
             elif event_type == "response.failed":
-                terminal_status = terminal_status or "failed"
+                terminal_status = "failed"
             # Stop on terminal event.
             break
 
@@ -410,7 +410,7 @@ def _consume_codex_event_stream(
         output=output,
         output_text=assembled_text,
         usage=terminal_usage,
-        status=terminal_status,
+        status=terminal_status or "completed",
         id=terminal_response_id,
         model=model,
         incomplete_details=terminal_incomplete_details,
