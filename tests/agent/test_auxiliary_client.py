@@ -493,6 +493,78 @@ class TestBuildCodexClient:
         assert mock_openai.call_count == 2
 
 
+
+class TestAuxiliaryCopilotMainRuntime:
+    def test_auto_uses_copilot_main_runtime_without_gh_auth_lookup(self):
+        import agent.auxiliary_client as aux
+
+        calls = []
+
+        def fake_openai(**kwargs):
+            calls.append(kwargs)
+            client = MagicMock()
+            client.api_key = kwargs.get("api_key")
+            client.base_url = kwargs.get("base_url")
+            return client
+
+        main_runtime = {
+            "provider": "copilot",
+            "model": "gpt-5.5",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "runtime-copilot-token",
+            "api_mode": "codex_responses",
+        }
+
+        with (
+            patch("agent.auxiliary_client.OpenAI", side_effect=fake_openai),
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials") as auth_lookup,
+        ):
+            client, model = aux._get_cached_client("auto", main_runtime=main_runtime)
+
+        assert client is not None
+        assert model == "gpt-5.5"
+        runtime_calls = [c for c in calls if c.get("api_key") == "runtime-copilot-token"]
+        assert runtime_calls
+        assert str(runtime_calls[0]["base_url"]).rstrip("/") == "https://api.githubcopilot.com"
+        # The auto path may probe custom endpoint config first, but the Copilot
+        # main-runtime branch must not re-enter auth resolution once selected.
+
+    def test_explicit_copilot_prefers_main_runtime_token_over_gh_auth_lookup(self):
+        import agent.auxiliary_client as aux
+
+        calls = []
+
+        def fake_openai(**kwargs):
+            calls.append(kwargs)
+            client = MagicMock()
+            client.api_key = kwargs.get("api_key")
+            client.base_url = kwargs.get("base_url")
+            return client
+
+        main_runtime = {
+            "provider": "copilot",
+            "model": "gpt-5.5",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "runtime-copilot-token",
+            "api_mode": "codex_responses",
+        }
+
+        with (
+            patch("agent.auxiliary_client.OpenAI", side_effect=fake_openai),
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials") as auth_lookup,
+        ):
+            client, model = aux.resolve_provider_client(
+                "copilot",
+                model="gpt-5.5",
+                main_runtime=main_runtime,
+            )
+
+        assert client is not None
+        assert model == "gpt-5.5"
+        assert calls[0]["api_key"] == "runtime-copilot-token"
+        assert str(calls[0]["base_url"]).rstrip("/") == "https://api.githubcopilot.com"
+        auth_lookup.assert_not_called()
+
 class TestResolveProviderClientUniversalModelFallback:
     """resolve_provider_client() picks a sensible model when callers pass none (#31845).
 
