@@ -29,7 +29,13 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
-def _make_codex_agent(tmp_path, monkeypatch):
+def _make_codex_agent(
+    tmp_path,
+    monkeypatch,
+    *,
+    provider="openai-codex",
+    base_url="https://chatgpt.com/backend-api/codex",
+):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -37,9 +43,9 @@ def _make_codex_agent(tmp_path, monkeypatch):
 
     agent = AIAgent(
         model="gpt-5.5",
-        provider="openai-codex",
+        provider=provider,
         api_key="sk-dummy",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url=base_url,
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
@@ -229,6 +235,121 @@ def test_ttfb_high_env_is_capped_for_openai_codex(tmp_path, monkeypatch):
         assert "TTFB threshold: 1s" in str(excinfo.value)
         assert "codex_ttfb_kill" in closes
         assert elapsed < 15, f"TTFB watchdog ignored cap and took {elapsed:.1f}s"
+    finally:
+        stop["flag"] = True
+
+
+def test_backend_classifiers_separate_copilot_from_openai_codex(tmp_path, monkeypatch):
+    """Copilot may use codex_responses wire format, but it is not the
+    ChatGPT OpenAI Codex backend and should not be classified as such."""
+    from agent import chat_completion_helpers as h
+
+    copilot = _make_codex_agent(
+        tmp_path,
+        monkeypatch,
+        provider="copilot",
+        base_url="https://api.githubcopilot.com",
+    )
+    assert h._is_openai_codex_backend(copilot) is False
+    assert h._is_copilot_responses_backend(copilot) is True
+
+    openai_codex = _make_codex_agent(
+        tmp_path,
+        monkeypatch,
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    assert h._is_openai_codex_backend(openai_codex) is True
+    assert h._is_copilot_responses_backend(openai_codex) is False
+
+
+def test_copilot_ttfb_status_uses_copilot_responses_stream_label(tmp_path, monkeypatch):
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path,
+        monkeypatch,
+        provider="copilot",
+        base_url="https://api.githubcopilot.com",
+    )
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+
+    statuses: list[str] = []
+    closes: list[str | None] = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_buffer_status", lambda msg: statuses.append(msg))
+    monkeypatch.setattr(agent, "_emit_status", lambda msg: statuses.append(msg))
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+        assert "Copilot responses stream" in str(excinfo.value)
+        assert "Codex stream" not in str(excinfo.value)
+        assert "codex_ttfb_kill" in closes
+        assert any("copilot responses stream" in s for s in statuses)
+        assert all("codex stream" not in s for s in statuses)
+    finally:
+        stop["flag"] = True
+
+
+def test_openai_codex_ttfb_status_keeps_openai_codex_stream_label(tmp_path, monkeypatch):
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path,
+        monkeypatch,
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+
+    statuses: list[str] = []
+    closes: list[str | None] = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_buffer_status", lambda msg: statuses.append(msg))
+    monkeypatch.setattr(agent, "_emit_status", lambda msg: statuses.append(msg))
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+        assert "OpenAI Codex stream" in str(excinfo.value)
+        assert "Copilot responses stream" not in str(excinfo.value)
+        assert "codex_ttfb_kill" in closes
+        assert any("openai-codex stream" in s for s in statuses)
     finally:
         stop["flag"] = True
 
