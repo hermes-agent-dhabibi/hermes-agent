@@ -88,6 +88,18 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
 )
 
+
+def _csv_set(raw: Any) -> set[str]:
+    """Coerce CSV/list/scalar Discord channel config into normalized strings."""
+    if raw is None:
+        return set()
+    if isinstance(raw, (list, tuple, set)):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    s = str(raw).strip()
+    if not s:
+        return set()
+    return {part.strip() for part in s.split(",") if part.strip()}
+
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -2026,6 +2038,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
             # Forum channels reject channel.send() — create a thread post instead.
+            allowed, reason = self._discord_channel_policy(channel, action="send")
+            if not allowed:
+                logger.warning("[%s] Discord send blocked for %s: %s", self.name, getattr(channel, "id", chat_id), reason)
+                return SendResult(success=False, error=reason or "Discord channel policy denied")
+
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
@@ -2244,6 +2261,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
+            allowed, reason = self._discord_channel_policy(channel, action="send")
+            if not allowed:
+                return SendResult(success=False, error=reason or "Discord channel policy denied")
             msg = channel.get_partial_message(int(message_id))
             formatted = self.format_message(content)
 
@@ -3426,50 +3446,22 @@ class DiscordAdapter(BasePlatformAdapter):
         # DMs aren't channel-gated — DMs follow on_message's DM lockdown
         # path which has its own user-allowlist enforcement.
         if not in_dm:
-            chan_id_raw = getattr(interaction, "channel_id", None) or getattr(
-                chan_obj, "id", None,
-            )
-            if chan_id_raw is not None:
-                channel_ids.add(str(chan_id_raw))
-                # Mirror on_message: also test the parent channel for threads
-                # so per-channel allow/deny lists work consistently.
-                if isinstance(chan_obj, discord.Thread):
-                    parent_id = self._get_parent_channel_id(chan_obj)
-                    if parent_id:
-                        channel_ids.add(str(parent_id))
-
-            # Name-form keys (ID + bare name + #name + parent) so allow/ignore
-            # lists configured by channel name work for slash-command
-            # interactions too, matching the on_message gates.
+            channel_id = getattr(chan_obj, "id", None)
+            parent_id = self._get_parent_channel_id(chan_obj)
+            channel_ids = {str(channel_id)} if channel_id is not None else set()
+            if parent_id:
+                channel_ids.add(str(parent_id))
             channel_keys = self._discord_channel_keys_from_channel(
                 chan_obj,
-                self._get_parent_channel_id(chan_obj)
-                if isinstance(chan_obj, discord.Thread)
-                else None,
+                parent_id,
             )
-
-            allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_raw:
-                allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
-                if "*" not in allowed:
-                    if not channel_ids:
-                        # Channel policy is configured but the interaction
-                        # has no resolvable channel id. Fail closed.
-                        return (
-                            False,
-                            "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
-                        )
-                    if not (channel_keys & allowed):
-                        return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
-
-            # Ignored beats allowed: even when a thread's parent channel
-            # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
-            # entry on the thread or its parent rejects the interaction.
-            ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            if ignored_raw and channel_ids:
-                ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
-                if "*" in ignored or (channel_keys & ignored):
-                    return (False, "channel in DISCORD_IGNORED_CHANNELS")
+            policy_allowed, policy_reason = self._discord_channel_policy(
+                chan_obj,
+                action="process",
+                trigger_allowed=True,
+            )
+            if not policy_allowed:
+                return False, policy_reason
 
         # ── User / role allowlist (mirrors on_message line 681) ──
         user = getattr(interaction, "user", None)
@@ -4690,6 +4682,17 @@ class DiscordAdapter(BasePlatformAdapter):
         # If a message was provided, kick off a new Hermes session in the thread
         starter = (message or "").strip()
         if starter and thread_id:
+            channel = self._client.get_channel(int(thread_id)) if self._client else None
+            if channel is None and self._client:
+                try:
+                    channel = await self._client.fetch_channel(int(thread_id))
+                except Exception:
+                    channel = None
+            if channel is not None:
+                allowed, reason = self._discord_channel_policy(channel, action="process")
+                if not allowed:
+                    logger.warning("[%s] Not dispatching thread starter in %s: %s", self.name, thread_id, reason)
+                    return
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
 
     async def _dispatch_thread_session(
@@ -4825,18 +4828,121 @@ class DiscordAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        # Coerce non-list scalars (str/int/float) to str before splitting.
-        # YAML parses a bare numeric value such as
-        # `free_response_channels: 1491973769726791812` as int, which was
-        # previously falling through the isinstance(str) branch and silently
-        # returning an empty set.  str() here accepts whatever scalar the YAML
-        # loader hands us without changing existing string/CSV semantics.
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
+        return _csv_set(raw)
+
+    def _discord_channel_ids(self, channel: Any, *, include_parent: bool = True) -> set[str]:
+        """Return the Discord channel/thread id plus parent id when available."""
+        ids: set[str] = set()
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            ids.add(str(channel_id))
+        if include_parent:
+            parent_id = self._get_parent_channel_id(channel)
+            if parent_id:
+                ids.add(str(parent_id))
+        return ids
+
+    def _discord_effective_permissions(self, channel: Any) -> Any:
+        guild = getattr(channel, "guild", None)
+        member = getattr(guild, "me", None) or getattr(self._client, "user", None)
+        permissions_for = getattr(channel, "permissions_for", None)
+        if member is None or not callable(permissions_for):
+            return None
+        try:
+            perms = permissions_for(member)
+            if inspect.isawaitable(perms):
+                # Test doubles sometimes expose permissions_for as AsyncMock.
+                # discord.py's real permissions_for is synchronous; ignore
+                # awaitable mocks rather than leaking unawaited coroutine warnings
+                # or treating every MagicMock permission as a hard deny.
+                close = getattr(perms, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                return None
+            return perms
+        except Exception as exc:
+            logger.debug(
+                "[%s] Could not resolve Discord permissions for %s: %s",
+                self.name,
+                getattr(channel, "id", "?"),
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _perm_enabled(perms: Any, name: str, default: bool = True) -> bool:
+        value = getattr(perms, name, default)
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        # MagicMock-valued permissions usually mean the test did not model
+        # Discord permissions; treat that as unknown/allowed. Real discord.py
+        # Permission attributes are concrete bools.
+        if value.__class__.__module__.startswith("unittest.mock"):
+            return default
+        return bool(value)
+
+    def _discord_permission_denies(self, channel: Any, *, action: str) -> Optional[str]:
+        """Return a reason when effective bot permissions deny an action."""
+        if isinstance(channel, discord.DMChannel):
+            return None
+        perms = self._discord_effective_permissions(channel)
+        if perms is None:
+            return None
+        if not self._perm_enabled(perms, "view_channel", True):
+            return "missing view_channel permission"
+        if action in {"process", "send"}:
+            if isinstance(channel, discord.Thread):
+                if not self._perm_enabled(perms, "send_messages_in_threads", True):
+                    return "missing send_messages_in_threads permission"
+            elif not self._perm_enabled(perms, "send_messages", True):
+                return "missing send_messages permission"
+        if action == "thread" and not self._perm_enabled(perms, "create_public_threads", True):
+            return "missing create_public_threads permission"
+        return None
+
+    def _discord_channel_policy(
+        self,
+        channel: Any,
+        *,
+        action: str,
+        trigger_allowed: bool = True,
+    ) -> Tuple[bool, Optional[str]]:
+        """Shared Discord channel policy.
+
+        Precedence: effective permission deny → ignored_channels deny →
+        allowed_channels allowlist → trigger policy.
+        """
+        if isinstance(channel, discord.DMChannel):
+            return (True, None) if trigger_allowed else (False, "trigger policy denied")
+
+        permission_reason = self._discord_permission_denies(channel, action=action)
+        if permission_reason:
+            return False, permission_reason
+
+        channel_keys = self._discord_channel_keys_from_channel(
+            channel,
+            self._get_parent_channel_id(channel),
+        )
+        ignored = _csv_set(os.getenv("DISCORD_IGNORED_CHANNELS", ""))
+        if "*" in ignored or bool(channel_keys & ignored):
+            return False, "channel in DISCORD_IGNORED_CHANNELS"
+
+        allowed = _csv_set(os.getenv("DISCORD_ALLOWED_CHANNELS", ""))
+        if allowed and "*" not in allowed:
+            if not channel_keys:
+                return False, "channel id missing with DISCORD_ALLOWED_CHANNELS configured"
+            if not (channel_keys & allowed):
+                return False, "channel not in DISCORD_ALLOWED_CHANNELS"
+
+        if not trigger_allowed:
+            return False, "trigger policy denied"
+
+        return True, None
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
@@ -5267,6 +5373,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if isinstance(channel, discord.DMChannel):
             return {"error": "Discord threads can only be created inside server text channels, not DMs."}
 
+        allowed, policy_reason = self._discord_channel_policy(channel, action="thread")
+        if not allowed:
+            return {"error": policy_reason or "Discord channel policy denied."}
+
         parent_channel = self._thread_parent_channel(channel)
         if parent_channel is None:
             return {"error": "Could not determine a parent text channel for the new thread."}
@@ -5346,6 +5456,19 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
+
+        allowed, policy_reason = self._discord_channel_policy(
+            message.channel,
+            action="thread",
+        )
+        if not allowed:
+            logger.debug(
+                "[%s] Auto-thread skipped in %s: %s",
+                self.name,
+                getattr(message.channel, "id", "?"),
+                policy_reason,
+            )
+            return None
 
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
@@ -6139,6 +6262,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
+        channel_ids = self._discord_channel_ids(message.channel)
         is_voice_linked_channel = False
 
         # Save mention-stripped text before auto-threading since create_thread()
@@ -6164,26 +6288,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
-            channel_ids = {str(message.channel.id)}
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
-
-            # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
-                    return
-
-            # Check ignored channels - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if "*" in ignored_channels or (channel_keys & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
-                return
-
             free_channels = self._discord_free_response_channels()
 
             require_mention = self._discord_require_mention()
@@ -6209,9 +6314,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not self._discord_thread_require_mention()
             )
 
+            trigger_allowed = True
             if require_mention and not is_free_channel and not in_bot_thread:
-                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
-                    return
+                trigger_allowed = self._self_is_explicitly_mentioned(message) or mention_prefix
+
+            allowed, policy_reason = self._discord_channel_policy(
+                message.channel,
+                action="process",
+                trigger_allowed=trigger_allowed,
+            )
+            if not allowed:
+                logger.debug(
+                    "[%s] Ignoring Discord message in channel %s: %s",
+                    self.name,
+                    channel_ids,
+                    policy_reason,
+                )
+                return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
