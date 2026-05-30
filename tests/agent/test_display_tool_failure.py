@@ -70,6 +70,20 @@ class TestDetectToolFailureTerminal:
         assert suffix.startswith(" [")
         assert suffix.endswith("]")
 
+
+    def test_terminal_missing_git_revision_is_diagnostic_not_failure(self):
+        result = json.dumps({
+            "output": "fatal: bad revision '4abfb6bc4'",
+            "exit_code": 128,
+            "error": None,
+            "exit_code_meaning": "Git revision '4abfb6bc4' was not found in this checkout",
+        })
+
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+
+        assert is_failure is False
+        assert suffix == ""
+
     def test_malformed_json_returns_no_suffix(self):
         # Terminal is special: only exit_code matters. Malformed JSON should
         # not crash and should not be flagged as failure.
