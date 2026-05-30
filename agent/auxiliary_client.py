@@ -3051,11 +3051,19 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
-        elif runtime_api_key:
-            # Pin auxiliary to the same api_key as the active main chat session
-            # so that a working key is reused instead of re-selecting from the pool
-            # (which might pick a different, potentially exhausted key).
-            explicit_api_key = runtime_api_key
+        else:
+            if runtime_base_url:
+                # Pin auxiliary to the same endpoint as the active main chat
+                # session.  This matters for named providers with runtime-only
+                # base URLs (notably Copilot via api.githubcopilot.com): without
+                # it, auxiliary resolution may re-enter provider auth discovery
+                # and pick a stale env/gh token or a default base URL.
+                explicit_base_url = runtime_base_url
+            if runtime_api_key:
+                # Pin auxiliary to the same api_key as the active main chat session
+                # so that a working key is reused instead of re-selecting from the pool
+                # (which might pick a different, potentially exhausted key).
+                explicit_api_key = runtime_api_key
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call
@@ -3071,6 +3079,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
+                main_runtime=runtime,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -3262,7 +3271,15 @@ def resolve_provider_client(
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
     if not model:
-        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
+        runtime = _normalize_main_runtime(main_runtime)
+        if runtime.get("provider") == provider and runtime.get("model"):
+            # Preserve the live main-runtime model verbatim.  In particular,
+            # Copilot exposes GPT-5.x names over its Responses-compatible
+            # surface; generic provider normalization would rewrite them to
+            # OpenAI Codex aliases and diverge from the working main session.
+            model = runtime.get("model")
+        else:
+            model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
@@ -3327,7 +3344,14 @@ def resolve_provider_client(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
                 "auxiliary provider (using %r instead)", model, resolved)
             model = None
-        final_model = model or resolved
+        # If auto resolved through the live main runtime, prefer that resolved
+        # model over the generic pre-filled auto model.  For Copilot GPT-5.x,
+        # `model` may have been normalized to an OpenAI Codex alias before the
+        # auto branch, while `resolved` is the actual working Copilot model.
+        if main_runtime and resolved:
+            final_model = resolved
+        else:
+            final_model = model or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -3635,6 +3659,49 @@ def resolve_provider_client(
         return None, None
 
     if pconfig.auth_type == "api_key":
+        runtime = _normalize_main_runtime(main_runtime)
+        runtime_provider = runtime.get("provider", "")
+        if (
+            runtime_provider == provider
+            and runtime.get("api_key")
+            and (runtime.get("base_url") or pconfig.inference_base_url)
+        ):
+            api_key_value = runtime.get("api_key")
+            raw_base_url = str(runtime.get("base_url") or pconfig.inference_base_url).strip().rstrip("/")
+            base_url = _to_openai_base_url(raw_base_url)
+            # Runtime models are already provider-resolved by the main agent.
+            # Do not re-normalize them here: Copilot deliberately exposes GPT-5.x
+            # names (e.g. gpt-5.5) over the Copilot Responses surface, while the
+            # generic normalizer maps OpenAI/Codex-family aliases to gpt-5-codex.
+            # Aux should inherit the exact live model when it inherits runtime auth.
+            final_model = model or runtime.get("model") or _normalize_resolved_model(
+                _get_aux_model_for_provider(provider), provider
+            )
+            headers = {}
+            if base_url_host_matches(base_url, "api.kimi.com"):
+                headers["User-Agent"] = "claude-code/0.1.0"
+            elif base_url_host_matches(base_url, "api.githubcopilot.com"):
+                from hermes_cli.copilot_auth import copilot_request_headers
+                headers.update(copilot_request_headers(
+                    is_agent_turn=True, is_vision=is_vision
+                ))
+            elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+                headers.update(build_nvidia_nim_headers(base_url))
+            client = OpenAI(api_key=api_key_value, base_url=base_url,
+                            **({"default_headers": headers} if headers else {}))
+            if provider == "copilot" and final_model and not raw_codex:
+                try:
+                    from hermes_cli.models import _should_use_copilot_responses_api
+                    if runtime.get("api_mode") == "codex_responses" or _should_use_copilot_responses_api(final_model):
+                        client = CodexAuxiliaryClient(client, final_model)
+                except ImportError:
+                    if runtime.get("api_mode") == "codex_responses":
+                        client = CodexAuxiliaryClient(client, final_model)
+            client = _wrap_if_needed(client, final_model, raw_base_url, "")
+            logger.debug("resolve_provider_client: %s (%s) via main_runtime", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
+
         if provider == "anthropic":
             client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
             if client is None:
