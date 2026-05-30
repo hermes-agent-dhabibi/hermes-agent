@@ -607,6 +607,56 @@ def test_run_codex_stream_surfaces_failed_status_in_final_response(monkeypatch):
     assert response.error == error_payload
 
 
+def test_run_codex_stream_failed_event_ignores_missing_payload_status(monkeypatch):
+    """response.failed is terminally failed even when payload omits status."""
+    agent = _build_agent(monkeypatch)
+    error_payload = {"message": "backend rejected request", "code": "bad_request"}
+
+    def _fake_create(**kwargs):
+        return _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.failed",
+                response={
+                    "id": "resp_failed_missing_status",
+                    "error": error_payload,
+                    # no status field; old code defaulted terminal_status to completed
+                },
+            ),
+        ])
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "failed"
+    assert response.error == error_payload
+
+
+def test_run_codex_stream_failed_event_overrides_weird_payload_status(monkeypatch):
+    """response.failed event type wins over bogus response.status payloads."""
+    agent = _build_agent(monkeypatch)
+
+    def _fake_create(**kwargs):
+        return _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.failed",
+                response=SimpleNamespace(
+                    id="resp_failed_weird_status",
+                    status="completed",
+                    error={"message": "provider says failed"},
+                    usage=None,
+                ),
+            ),
+        ])
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "failed"
+    assert response.error == {"message": "provider says failed"}
+
+
 def test_run_codex_stream_parses_create_stream_events(monkeypatch):
     """The primary path consumes ``responses.create(stream=True)`` events directly."""
     agent = _build_agent(monkeypatch)
