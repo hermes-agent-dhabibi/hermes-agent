@@ -507,6 +507,53 @@ def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypat
     assert "codex_ttfb_kill" not in closes
 
 
+def test_large_copilot_responses_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypatch):
+    """Large Copilot Responses requests also need admission/prefill time.
+
+    The production failure was provider=copilot + api_mode=codex_responses +
+    ~70-80k tokens: the generic 12s TTFB watchdog killed every attempt before
+    GitHub Copilot could emit the first SSE event.  Copilot should share the
+    same large-request TTFB suppression as the ChatGPT Codex backend, without
+    being mislabeled as OpenAI Codex.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path,
+        monkeypatch,
+        provider="copilot",
+        base_url="https://api.githubcopilot.com",
+    )
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+
+    statuses: list[str] = []
+    closes: list[str | None] = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_buffer_status", lambda msg: statuses.append(msg))
+    monkeypatch.setattr(agent, "_emit_status", lambda msg: statuses.append(msg))
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        time.sleep(2.0)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    large_input = "x" * 320_000  # ~80k estimated tokens, matching live failures.
+    resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
+    assert resp is sentinel
+    assert "codex_ttfb_kill" not in closes
+    assert not any("No first byte" in s for s in statuses)
+
+
 def test_large_codex_request_strict_ttfb_env_still_reconnects(tmp_path, monkeypatch):
     """Operators can force the old early-reconnect behavior for large inputs
     with HERMES_CODEX_TTFB_STRICT=1."""
