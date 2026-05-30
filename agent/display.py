@@ -823,11 +823,18 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
 
     data = safe_json_loads(result)
 
-    # Terminal: non-zero exit code is the canonical failure signal.
+    # Terminal: non-zero exit code is normally the canonical failure signal.
+    # A few command-specific diagnostics are intentionally classified as
+    # informational, not tool failures, so they don't pollute errors.log as
+    # Hermes/backend failures (e.g. git bad revision when the model probes an
+    # absent SHA while investigating history).
     if tool_name == "terminal":
         if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
+                meaning = str(data.get("exit_code_meaning") or "").lower()
+                if "git revision" in meaning and "not found in this checkout" in meaning:
+                    return False, ""
                 err_msg = data.get("error")
                 if err_msg:
                     return True, f" [{_trim_error(str(err_msg))}]"
