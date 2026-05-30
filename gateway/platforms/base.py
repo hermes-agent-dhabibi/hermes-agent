@@ -2460,7 +2460,7 @@ class BasePlatformAdapter(ABC):
         # Unquoted paths MUST start with / or ~/ to avoid matching placeholders
         # like MEDIA:<path> or other non-path text.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.\w+(?:\.\w+)*(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
