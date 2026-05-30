@@ -861,6 +861,19 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                platform_direct: dict[str, Any] = {}
+                if "home_channel" in platform_cfg:
+                    home_cfg = platform_cfg["home_channel"]
+                    if isinstance(home_cfg, dict):
+                        platform_direct["home_channel"] = {"platform": plat.value, **home_cfg}
+                    else:
+                        platform_direct["home_channel"] = home_cfg
+                if "reply_to_mode" in platform_cfg:
+                    platform_direct["reply_to_mode"] = platform_cfg["reply_to_mode"]
+                if "token" in platform_cfg:
+                    platform_direct["token"] = platform_cfg["token"]
+                if "api_key" in platform_cfg:
+                    platform_direct["api_key"] = platform_cfg["api_key"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):
@@ -870,11 +883,16 @@ def load_gateway_config() -> GatewayConfig:
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 enabled_was_explicit = "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit:
+                if not bridged and not platform_direct and not enabled_was_explicit:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
+                plat_data.update(platform_direct)
+                extra = plat_data.setdefault("extra", {})
+                if not isinstance(extra, dict):
+                    extra = {}
+                    plat_data["extra"] = extra
                 if plat == Platform.SLACK and enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
