@@ -9,11 +9,10 @@ Token type support (per GitHub docs):
   ghu_          GitHub App token      ✓  (via environment variable)
   ghp_          Classic PAT           ✗  NOT SUPPORTED
 
-Credential search order (matching Copilot CLI behaviour):
-  1. COPILOT_GITHUB_TOKEN env var
-  2. GH_TOKEN env var
-  3. GITHUB_TOKEN env var
-  4. gh auth token  CLI fallback
+Credential search order:
+  1. COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN from process env or ~/.hermes/.env
+  2. Hermes credential pool entries for provider "copilot"
+  3. gh auth token CLI fallback
 """
 
 from __future__ import annotations
@@ -64,33 +63,109 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _iter_hermes_env_tokens() -> list[tuple[str, str]]:
+    """Return Copilot token candidates from process env / ~/.hermes/.env.
+
+    ``get_env_value`` preserves normal env precedence while also seeing the
+    Hermes .env file used by gateway/profile processes.  Do not log returned
+    values; they are raw GitHub tokens.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+    except Exception:
+        get_env_value = None  # type: ignore[assignment]
+
+    candidates: list[tuple[str, str]] = []
+    for env_var in COPILOT_ENV_VARS:
+        if get_env_value is not None:
+            val = (get_env_value(env_var) or "").strip()
+        else:
+            val = os.getenv(env_var, "").strip()
+        if val:
+            candidates.append((val, env_var))
+    return candidates
+
+
+def _iter_credential_pool_tokens() -> list[tuple[str, str]]:
+    """Return Copilot token candidates persisted in Hermes credential pool."""
+    try:
+        from hermes_cli.auth import read_credential_pool
+    except Exception:
+        return []
+
+    candidates: list[tuple[str, str]] = []
+    try:
+        entries = read_credential_pool("copilot")
+    except Exception:
+        return []
+    if not isinstance(entries, list):
+        return []
+
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        for field in ("access_token", "agent_key", "api_key"):
+            token = str(entry.get(field) or "").strip()
+            if token:
+                source = str(entry.get("source") or entry.get("label") or f"entry-{idx + 1}").strip()
+                candidates.append((token, f"credential_pool:copilot:{source}"))
+                break
+    return candidates
+
+
+def _select_valid_copilot_candidate(
+    candidates: list[tuple[str, str]],
+) -> tuple[str, str, tuple[str, str] | None]:
+    """Return first valid candidate plus the first classic-PAT candidate.
+
+    Invalid classic PATs are remembered but not warned about unless no usable
+    token exists from any preferred source.  This avoids warning spam when a
+    stale GH_TOKEN shadows a valid COPILOT_GITHUB_TOKEN/.env/pool entry.
+    """
+    first_classic_pat: tuple[str, str] | None = None
+    for token, source in candidates:
+        valid, _msg = validate_copilot_token(token)
+        if valid:
+            return token, source, first_classic_pat
+        if token.startswith(_CLASSIC_PAT_PREFIX) and first_classic_pat is None:
+            first_classic_pat = (token, source)
+        else:
+            logger.debug("Ignoring unsupported Copilot token from %s", source)
+    return "", "", first_classic_pat
+
+
+def _classic_pat_error(source: str) -> ValueError:
+    _valid, msg = validate_copilot_token(_CLASSIC_PAT_PREFIX)
+    return ValueError(f"Token from {source} is a classic PAT (ghp_*). {msg}")
+
+
 def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use.
 
     Returns (token, source) where source describes where the token came from.
     Raises ValueError if only a classic PAT is available.
     """
-    # 1. Check env vars in priority order
-    for env_var in COPILOT_ENV_VARS:
-        val = os.getenv(env_var, "").strip()
-        if val:
-            valid, msg = validate_copilot_token(val)
-            if not valid:
-                logger.warning(
-                    "Token from %s is not supported: %s", env_var, msg
-                )
-                continue
-            return val, env_var
-
-    # 2. Fall back to gh auth token
-    token = _try_gh_cli_token()
+    token, source, first_classic_pat = _select_valid_copilot_candidate(
+        _iter_hermes_env_tokens() + _iter_credential_pool_tokens()
+    )
     if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
-            )
-        return token, "gh auth token"
+        return token, source
+
+    gh_token = _try_gh_cli_token()
+    if gh_token:
+        valid, _msg = validate_copilot_token(gh_token)
+        if valid:
+            return gh_token, "gh auth token"
+        if gh_token.startswith(_CLASSIC_PAT_PREFIX):
+            first_classic_pat = (gh_token, "`gh auth token`")
+        else:
+            logger.debug("Ignoring unsupported Copilot token from `gh auth token`")
+
+    if first_classic_pat is not None:
+        _token, bad_source = first_classic_pat
+        err = _classic_pat_error(bad_source)
+        logger.warning("Copilot token from %s is not usable: %s", bad_source, err)
+        raise err
 
     return "", ""
 

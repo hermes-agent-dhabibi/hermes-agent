@@ -77,6 +77,52 @@ class TestResolveToken:
         assert token == "gho_valid_oauth"
         assert source == "GITHUB_TOKEN"
 
+    def test_valid_dotenv_token_suppresses_gh_fallback(self, monkeypatch, tmp_path, caplog):
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("COPILOT_GITHUB_TOKEN=gho_from_dotenv\n", encoding="utf-8")
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="ghp_from_gh") as gh_cli:
+            token, source = resolve_copilot_token()
+
+        assert token == "gho_from_dotenv"
+        assert source == "COPILOT_GITHUB_TOKEN"
+        gh_cli.assert_not_called()
+        assert "classic PAT" not in caplog.text
+        assert "gho_from_dotenv" not in caplog.text
+
+    def test_invalid_gh_token_plus_valid_copilot_token_selects_valid_one(self, monkeypatch, caplog):
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_valid_copilot")
+        monkeypatch.setenv("GH_TOKEN", "ghp_invalid_classic")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        token, source = resolve_copilot_token()
+
+        assert token == "gho_valid_copilot"
+        assert source == "COPILOT_GITHUB_TOKEN"
+        assert "classic PAT" not in caplog.text
+        assert "ghp_invalid_classic" not in caplog.text
+
+    def test_only_ghp_token_emits_actionable_warning(self, monkeypatch, caplog):
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghp_only_classic")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value=None):
+            with pytest.raises(ValueError, match="classic PAT"):
+                resolve_copilot_token()
+
+        assert "Classic Personal Access Tokens" in caplog.text
+        assert "ghp_only_classic" not in caplog.text
+
     def test_gh_cli_fallback(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
