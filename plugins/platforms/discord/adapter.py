@@ -84,6 +84,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    is_text_injectable_document,
 )
 from tools.url_safety import is_safe_url
 
@@ -5275,9 +5276,15 @@ class DiscordAdapter(BasePlatformAdapter):
                                 "document" if in_allowlist else "attachment",
                                 cached_path,
                             )
-                            # Inject text content for plain-text documents (capped at 100 KB)
+                            # Inject text content for text-readable documents (capped at 100 KB).
+                            # Covers code files, config files, markup, and plain text while
+                            # keeping binary office/archive formats out of the prompt.
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if in_allowlist and ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            if (
+                                in_allowlist
+                                and is_text_injectable_document(ext, doc_mime)
+                                and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES
+                            ):
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"
