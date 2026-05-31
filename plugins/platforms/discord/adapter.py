@@ -132,7 +132,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
-    _TEXT_INJECT_EXTENSIONS,
+    is_text_injectable_document,
     _prefix_within_utf16_limit,
     utf16_len,
     validate_inbound_media_size,
@@ -6550,10 +6550,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         # extension) are inlined too; everything else relies on
                         # ``gateway/run.py`` to emit a path-pointing context note.
                         MAX_TEXT_INJECT_BYTES = 100 * 1024
-                        _is_text = (
-                            ext in _TEXT_INJECT_EXTENSIONS
-                            or (content_type or "").startswith("text/")
-                        )
+                        _is_text = is_text_injectable_document(ext, doc_mime)
                         if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                             try:
                                 text_content = raw_bytes.decode("utf-8")
