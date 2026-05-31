@@ -1093,26 +1093,126 @@ def _log_safe_path(path: str) -> str:
 
 
 SUPPORTED_DOCUMENT_TYPES = {
+    # Documents
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".csv": "text/csv",
     ".log": "text/plain",
     ".json": "application/json",
-    ".xml": "application/xml",
-    ".yaml": "application/yaml",
-    ".yml": "application/yaml",
-    ".toml": "application/toml",
+    ".jsonl": "application/jsonl",
+    ".xml": "text/xml",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+    ".toml": "text/toml",
     ".ini": "text/plain",
     ".cfg": "text/plain",
+    ".conf": "text/plain",
+    ".env": "text/plain",
+    ".properties": "text/plain",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".ts": "text/plain",
-    ".py": "text/plain",
-    ".sh": "text/plain",
+    # Code files
+    ".py": "text/x-python",
+    ".js": "text/javascript",
+    ".ts": "text/typescript",
+    ".jsx": "text/javascript",
+    ".tsx": "text/typescript",
+    ".c": "text/x-c",
+    ".cpp": "text/x-c++",
+    ".cc": "text/x-c++",
+    ".cxx": "text/x-c++",
+    ".h": "text/x-c",
+    ".hpp": "text/x-c++",
+    ".java": "text/x-java",
+    ".rs": "text/x-rust",
+    ".go": "text/x-go",
+    ".rb": "text/x-ruby",
+    ".php": "text/x-php",
+    ".swift": "text/x-swift",
+    ".kt": "text/x-kotlin",
+    ".kts": "text/x-kotlin",
+    ".scala": "text/x-scala",
+    ".r": "text/x-r",
+    ".sql": "text/x-sql",
+    ".sh": "text/x-shellscript",
+    ".bash": "text/x-shellscript",
+    ".zsh": "text/x-shellscript",
+    ".fish": "text/x-shellscript",
+    ".ps1": "text/x-powershell",
+    ".lua": "text/x-lua",
+    ".pl": "text/x-perl",
+    ".ex": "text/x-elixir",
+    ".exs": "text/x-elixir",
+    ".erl": "text/x-erlang",
+    ".hs": "text/x-haskell",
+    ".ml": "text/x-ocaml",
+    ".cs": "text/x-csharp",
+    ".fs": "text/x-fsharp",
+    ".dart": "text/x-dart",
+    ".v": "text/x-v",
+    ".zig": "text/x-zig",
+    ".nim": "text/x-nim",
+    # Web / markup files
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".css": "text/css",
+    ".scss": "text/x-scss",
+    ".sass": "text/x-sass",
+    ".less": "text/x-less",
+    ".svg": "image/svg+xml",
+    ".rst": "text/x-rst",
+    ".tex": "text/x-tex",
+    ".latex": "text/x-latex",
+    ".org": "text/x-org",
+    ".adoc": "text/asciidoc",
+    # Build / project files
+    ".makefile": "text/x-makefile",
+    ".cmake": "text/x-cmake",
+    ".dockerfile": "text/x-dockerfile",
+    ".containerfile": "text/x-dockerfile",
+    ".gradle": "text/x-gradle",
+    ".tf": "text/x-terraform",
+    ".tfvars": "text/x-terraform",
+    ".hcl": "text/x-hcl",
+    ".proto": "text/x-protobuf",
+    ".graphql": "text/x-graphql",
+    ".gql": "text/x-graphql",
+    # Diff / patch
+    ".diff": "text/x-diff",
+    ".patch": "text/x-diff",
 }
+
+TEXT_INJECT_DOCUMENT_EXTS = frozenset(
+    ext
+    for ext, mime in SUPPORTED_DOCUMENT_TYPES.items()
+    if (
+        mime.startswith("text/")
+        or mime in {"application/json", "application/jsonl"}
+        or ext in {".svg", ".json", ".jsonl", ".xml", ".csv", ".tsv"}
+    )
+) - {".pdf", ".zip", ".docx", ".xlsx", ".pptx"}
+
+
+def is_text_injectable_document(ext: str, mime_type: str = "") -> bool:
+    """Return whether a cached document is safe/useful to inline as text.
+
+    Discord often reports code/config uploads as ``text/plain`` or generic
+    application types, so prefer the normalized extension allowlist while also
+    accepting explicit text-like MIME types. Binary office/archive formats are
+    excluded even if a client mislabels them.
+    """
+    normalized_ext = (ext or "").lower()
+    normalized_mime = (mime_type or "").lower()
+    if normalized_ext in {".pdf", ".zip", ".docx", ".xlsx", ".pptx"}:
+        return False
+    return (
+        normalized_ext in TEXT_INJECT_DOCUMENT_EXTS
+        or normalized_mime.startswith("text/")
+        or normalized_mime in {"application/json", "application/jsonl"}
+    )
 
 
 # ---------------------------------------------------------------------------
