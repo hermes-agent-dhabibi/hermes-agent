@@ -318,6 +318,100 @@ class TestIncomingDocumentHandling:
         assert "[Content of" not in (event.text or "")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("filename", "content_type", "expected_mime", "body"),
+        [
+            ("app.js", "application/javascript", "text/javascript", b"console.log('hi')"),
+            ("component.tsx", "text/plain", "text/typescript", b"export const C = () => <div />"),
+            ("main.go", "text/plain", "text/x-go", b"package main"),
+            ("Dockerfile.dockerfile", "text/plain", "text/x-dockerfile", b"FROM python:3.12"),
+            ("schema.graphql", "text/plain", "text/x-graphql", b"type Query { ok: Boolean }"),
+            ("fix.patch", "text/plain", "text/x-diff", b"diff --git a/a b/a"),
+        ],
+    )
+    async def test_code_and_config_uploads_are_cached_and_text_injected(
+        self, adapter, filename, content_type, expected_mime, body
+    ):
+        """Pluginized Discord should preserve the old broad text-upload behavior."""
+        with _mock_aiohttp_download(body):
+            msg = make_message(
+                attachments=[make_attachment(filename=filename, content_type=content_type)],
+                content="please inspect",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [expected_mime]
+        assert f"[Content of {filename}]:" in event.text
+        assert body.decode("utf-8") in event.text
+        assert event.text.index("[Content of") < event.text.index("please inspect")
+
+    @pytest.mark.asyncio
+    async def test_json_and_yaml_uploads_are_text_injected(self, adapter):
+        """Structured text formats should be injected, not just cached as opaque files."""
+        responses = [b'{"ok": true}', b"name: hermes\n"]
+
+        def make_session(_responses):
+            idx = 0
+
+            class FakeSession:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_):
+                    pass
+
+                def get(self, url, **kwargs):
+                    nonlocal idx
+                    data = _responses[idx % len(_responses)]
+                    idx += 1
+
+                    resp = AsyncMock()
+                    resp.status = 200
+                    resp.read = AsyncMock(return_value=data)
+                    resp.__aenter__ = AsyncMock(return_value=resp)
+                    resp.__aexit__ = AsyncMock(return_value=False)
+                    return resp
+
+            return FakeSession()
+
+        with patch("aiohttp.ClientSession", return_value=make_session(responses)):
+            msg = make_message(
+                attachments=[
+                    make_attachment(filename="config.json", content_type="application/json"),
+                    make_attachment(filename="settings.yaml", content_type="application/x-yaml"),
+                ],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_types == ["application/json", "text/yaml"]
+        assert "[Content of config.json]:" in event.text
+        assert '{"ok": true}' in event.text
+        assert "[Content of settings.yaml]:" in event.text
+        assert "name: hermes" in event.text
+
+    @pytest.mark.asyncio
+    async def test_pdf_remains_cached_not_text_injected(self, adapter):
+        """Binary allowlisted documents must not be decoded into the prompt."""
+        with _mock_aiohttp_download(b"%PDF-1.7\x00binary"):
+            msg = make_message(
+                attachments=[make_attachment(filename="paper.pdf", content_type="application/pdf")],
+                content="look",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["application/pdf"]
+        assert "[Content of" not in event.text
+        assert event.text == "look"
+
+    @pytest.mark.asyncio
     async def test_multiple_text_files_both_injected(self, adapter):
         """Two text file attachments should both be injected into event.text in order."""
         content1 = b"First file content"
