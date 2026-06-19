@@ -399,26 +399,26 @@ class TestValueTypes:
         _write_config(tmp_path, """\
             model: test
         """)
+        from hermes_cli.config import DEFAULT_CONFIG
         from hermes_cli.config_sync import sync_config
         sync_config()
 
         cfg = _read_config(tmp_path)
-        # checkpoints.enabled defaults to True
-        assert cfg.get("checkpoints", {}).get("enabled") is True
-        # privacy.redact_pii defaults to False
-        assert cfg.get("privacy", {}).get("redact_pii") is False
+        assert cfg["checkpoints"]["enabled"] is DEFAULT_CONFIG["checkpoints"]["enabled"]
+        assert cfg["privacy"]["redact_pii"] is DEFAULT_CONFIG["privacy"]["redact_pii"]
 
     def test_none_value(self, tmp_path):
-        """compression.summary_base_url defaults to None."""
+        """A current null default is rendered and parsed as None."""
         _write_config(tmp_path, """\
-            compression:
-              enabled: true
+            model: test
         """)
+        from hermes_cli.config import DEFAULT_CONFIG
         from hermes_cli.config_sync import sync_config
         sync_config()
 
         cfg = _read_config(tmp_path)
-        assert cfg["compression"]["summary_base_url"] is None
+        assert DEFAULT_CONFIG["max_concurrent_sessions"] is None
+        assert cfg["max_concurrent_sessions"] is None
 
 
 class TestIdempotent:
