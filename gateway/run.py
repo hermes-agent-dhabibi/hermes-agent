@@ -2513,6 +2513,18 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _format_interim_reasoning(text: str, style: str) -> str:
+    """Format completed reasoning commentary for messaging display."""
+    lines = str(text or "").splitlines()
+    if style == "subtext":
+        body = "\n".join(f"-# {line}" if line else "-#" for line in lines)
+        return f"-# 💭 Reasoning\n{body}"
+    if style == "blockquote":
+        body = "\n".join(f"> {line}" if line else ">" for line in lines)
+        return f"💭\n{body}"
+    return text
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -20094,6 +20106,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not _run_still_current():
                     return
                 display_text = text
+                if _platform_config_key(source.platform) == "discord":
+                    try:
+                        from gateway.display_config import resolve_display_setting
+                        _interim_style = resolve_display_setting(
+                            _load_gateway_config(),
+                            "discord",
+                            "reasoning_style",
+                            "blockquote",
+                        )
+                    except Exception:
+                        _interim_style = "blockquote"
+                    display_text = _format_interim_reasoning(text, _interim_style)
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
@@ -20102,6 +20126,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 if already_streamed or not _status_adapter or not str(display_text or "").strip():
                     return
+                if progress_queue:
+                    progress_queue.put(("__reset__",))
                 safe_schedule_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
