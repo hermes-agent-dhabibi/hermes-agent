@@ -1305,7 +1305,7 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
 
     async def send_and_invalidate(chat_id, content, reply_to=None, metadata=None):
         result = await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)
-        if content == "first interim" and not invalidated["done"]:
+        if content == "💭\n> first interim" and not invalidated["done"]:
             invalidated["done"] = True
             runner._invalidate_session_run_generation(session_key, reason="test_stop")
         return result
@@ -1324,8 +1324,8 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
 
     sent_texts = [call["content"] for call in adapter.sent]
     assert result["final_response"] == "done"
-    assert "first interim" in sent_texts
-    assert "second interim" not in sent_texts
+    assert "💭\n> first interim" in sent_texts
+    assert "💭\n> second interim" not in sent_texts
 
 
 @pytest.mark.asyncio
