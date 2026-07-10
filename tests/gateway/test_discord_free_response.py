@@ -277,13 +277,14 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 
 @pytest.mark.asyncio
-async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypatch):
-    """Free-response channels bypass mention gating without forcing a thread."""
+async def test_discord_free_response_channel_allows_auto_thread(adapter, monkeypatch):
+    """Free-response removes mention gating without disabling auto-threading."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
 
-    adapter._auto_create_thread = AsyncMock()
+    fake_thread = FakeThread(channel_id=999, parent=FakeTextChannel(channel_id=789))
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
 
     message = make_message(
         channel=FakeTextChannel(channel_id=789),
@@ -292,11 +293,11 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
 
     await adapter._handle_message(message)
 
-    adapter._auto_create_thread.assert_not_awaited()
+    adapter._auto_create_thread.assert_awaited_once()
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
-    assert event.source.chat_type == "group"
+    assert event.source.chat_type == "thread"
 
 
 @pytest.mark.asyncio
