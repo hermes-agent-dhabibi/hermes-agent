@@ -122,10 +122,9 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         "tool_progress": "off",
         "busy_ack_detail": False,
     },
-    # Discord has a native "subtext" primitive (-# small grey text) that reads
-    # as metadata rather than content, so reasoning summaries default to it
-    # here instead of the fenced code block used elsewhere.
-    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext"},
+    # Keep reasoning visually distinct from final answers while preserving
+    # readable multiline formatting in Discord threads.
+    "discord":     {**_TIER_HIGH, "reasoning_style": "blockquote"},
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
