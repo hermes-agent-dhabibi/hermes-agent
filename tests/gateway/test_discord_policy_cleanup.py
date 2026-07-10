@@ -116,19 +116,20 @@ def make_message(*, channel, content="hello", mentions=None):
 
 
 @pytest.mark.asyncio
-async def test_free_response_channel_skips_auto_thread(adapter, monkeypatch):
+async def test_free_response_channel_still_auto_threads(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
 
-    adapter._auto_create_thread = AsyncMock()
+    fake_thread = FakeThread(channel_id=999, parent=FakeTextChannel(channel_id=789))
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
 
     await adapter._handle_message(make_message(channel=FakeTextChannel(channel_id=789), content="free chat"))
 
-    adapter._auto_create_thread.assert_not_awaited()
+    adapter._auto_create_thread.assert_awaited_once()
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
-    assert event.source.chat_type == "group"
-    assert event.source.thread_id is None
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
 
 
 @pytest.mark.asyncio
