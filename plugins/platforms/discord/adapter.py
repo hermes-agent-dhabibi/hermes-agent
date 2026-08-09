@@ -7367,6 +7367,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
+                # Discord applies the returned retry window to thread
+                # creation, not just this specific call shape. Trying the
+                # seed-message route immediately only creates a misleading
+                # announcement before the same bucket rejects create_thread.
+                if self._is_discord_rate_limit(direct_error):
+                    break
+                seed_msg = None
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
@@ -7383,6 +7390,17 @@ class DiscordAdapter(BasePlatformAdapter):
                     return thread
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
+                    if seed_msg is not None:
+                        try:
+                            await seed_msg.delete()
+                        except Exception as cleanup_error:
+                            logger.debug(
+                                "[%s] Could not delete orphaned auto-thread seed message: %s",
+                                self.name,
+                                cleanup_error,
+                            )
+                    if self._is_discord_rate_limit(fallback_error):
+                        break
                     if attempt == 0:
                         # Brief backoff before the second attempt — most failures
                         # in this path are transient connect errors that recover
@@ -7391,7 +7409,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         continue
 
         logger.warning(
-            "[%s] Auto-thread creation failed after retry. Direct error: %s. Fallback error: %s",
+            "[%s] Auto-thread creation failed. Direct error: %s. Fallback error: %s",
             self.name,
             last_direct_error,
             last_fallback_error,
