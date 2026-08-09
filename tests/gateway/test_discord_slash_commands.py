@@ -427,6 +427,92 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
     assert name == "please help"
 
 
+class _DiscordRateLimited(Exception):
+    status = 429
+    retry_after = 260.0
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_direct_429_fails_without_seed_or_retry(adapter):
+    """A Discord retry window applies to thread creation, not one call site."""
+    channel = SimpleNamespace(send=AsyncMock())
+    message = SimpleNamespace(
+        content="test",
+        create_thread=AsyncMock(side_effect=_DiscordRateLimited("Too many requests")),
+        channel=channel,
+        author=SimpleNamespace(display_name="Daniel"),
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.asyncio.sleep",
+        new_callable=AsyncMock,
+    ) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    message.create_thread.assert_awaited_once()
+    channel.send.assert_not_awaited()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_fallback_429_deletes_seed_and_does_not_retry(adapter):
+    seed = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=_DiscordRateLimited("Too many requests")),
+        delete=AsyncMock(),
+    )
+    channel = SimpleNamespace(send=AsyncMock(return_value=seed))
+    message = SimpleNamespace(
+        content="test",
+        create_thread=AsyncMock(side_effect=RuntimeError("direct route unavailable")),
+        channel=channel,
+        author=SimpleNamespace(display_name="Daniel"),
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.asyncio.sleep",
+        new_callable=AsyncMock,
+    ) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    message.create_thread.assert_awaited_once()
+    channel.send.assert_awaited_once()
+    seed.create_thread.assert_awaited_once()
+    seed.delete.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_transient_failure_cleans_seed_before_retry(adapter):
+    thread = SimpleNamespace(id=999, name="test")
+    seed = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=RuntimeError("connection reset")),
+        delete=AsyncMock(),
+    )
+    channel = SimpleNamespace(send=AsyncMock(return_value=seed))
+    message = SimpleNamespace(
+        content="test",
+        create_thread=AsyncMock(
+            side_effect=[RuntimeError("connection reset"), thread]
+        ),
+        channel=channel,
+        author=SimpleNamespace(display_name="Daniel"),
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.asyncio.sleep",
+        new_callable=AsyncMock,
+    ) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    assert message.create_thread.await_count == 2
+    channel.send.assert_awaited_once()
+    seed.delete.assert_awaited_once()
+    sleep.assert_awaited_once_with(0.75)
+
+
 @pytest.mark.asyncio
 async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     thread = SimpleNamespace(
@@ -600,5 +686,3 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         f"Flat /skill command payload is ~{len(payload)} bytes — the whole "
         f"point of this design is that it stays small regardless of skill count"
     )
-
-
