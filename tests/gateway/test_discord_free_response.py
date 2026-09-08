@@ -277,21 +277,13 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 
 @pytest.mark.asyncio
-async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypatch):
-    """Free-response channels should reply inline, never spawn a new thread.
-
-    Without this, every message in a free-response channel would auto-create
-    a fresh thread (since the channel bypasses the @mention gate, every
-    message looks like a fresh trigger).  That turns a "lightweight chat"
-    channel into a thread-spawning machine — see the docs at
-    website/docs/user-guide/messaging/discord.md which already describe
-    this as the intended behavior.
-    """
+async def test_discord_free_response_channel_attempts_auto_thread(adapter, monkeypatch):
+    """Free-response messages are delivered inside their newly created thread."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
 
-    adapter._auto_create_thread = AsyncMock()
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=790))
 
     message = make_message(
         channel=FakeTextChannel(channel_id=789),
@@ -300,11 +292,12 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
 
     await adapter._handle_message(message)
 
-    adapter._auto_create_thread.assert_not_awaited()
+    adapter._auto_create_thread.assert_awaited_once_with(message)
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
-    assert event.source.chat_type == "group"
+    assert event.source.chat_type == "thread"
+    assert str(event.source.thread_id) == "790"
 
 
 @pytest.mark.asyncio
@@ -880,5 +873,3 @@ class TestNonConversationalTrackerOffload:
             await _asyncio.gather(first, second)
 
         assert sorted(writes[-1]) == ["1", "2"]
-
-
